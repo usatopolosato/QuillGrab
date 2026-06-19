@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container-fluid mt-2">
+    <div class="row">
+        <div class="col-md-7" style="overflow: auto; height: 85vh; border: 1px solid #ccc;">
+            <canvas id="c"></canvas>
+        </div>
+        <div class="col-md-5" style="height: 85vh; overflow-y: auto;">
+            <div class="d-flex justify-content-between mb-2">
+                <button class="btn btn-primary btn-sm" id="btn-run-ocr">Распознать текст</button>
+                <button class="btn btn-success btn-sm" id="btn-save-ocr">Сохранить изменения</button>
+            </div>
+            <div id="progress" class="mb-2 d-none">
+                <div class="progress">
+                    <div class="progress-bar" role="progressbar" style="width: 0%">0%</div>
+                </div>
+            </div>
+            <div id="ocr-blocks"></div>
+            <div class="mt-2">
+                <a href="/annotate/{{ project_id }}/{{ page }}" class="btn btn-outline-secondary btn-sm">Назад к разметке</a>
+                {% if page > 1 %}
+                <a href="/ocr/{{ project_id }}/{{ page-1 }}" class="btn btn-outline-dark btn-sm">← Предыдущая</a>
+                {% endif %}
+                {% if page < total_pages %}
+                <a href="/ocr/{{ project_id }}/{{ page+1 }}" class="btn btn-outline-dark btn-sm">Следующая →</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+<script>
+    const PROJECT_ID = "{{ project_id }}";
+    const PAGE = {{ page }};
+    const TOTAL_PAGES = {{ total_pages }};
+    const IMAGE_URL = "{{ image_url }}";
+    const API_OCR = `/api/projects/${PROJECT_ID}/pages/${PAGE}/ocr`;
+    const API_OCR_STATUS = API_OCR + "/status";
+    const DETECTIONS_API = `/api/projects/${PROJECT_ID}/pages/${PAGE}/detections`;
+</script>
+<script src="{{ url_for('static', filename='js/ocr.js') }}"></script>
+{% endblock %}

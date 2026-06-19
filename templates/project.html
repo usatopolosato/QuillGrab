@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Проект: {{ project.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>{{ project.name }}</h1>
+    <a href="{{ url_for('main.index') }}" class="btn btn-outline-secondary">← К списку</a>
+</div>
+<p>Страниц: {{ project.pages }}</p>
+
+<div class="row">
+    {% for page_num in pages %}
+    <div class="col-md-3 col-sm-4 col-6 mb-3">
+        <div class="card">
+            <a href="{{ url_for('main.annotate', project_id=project_id, page=page_num) }}">
+                <img src="{{ url_for('main.serve_page_image', project_id=project_id, page=page_num) }}"
+                     class="card-img-top" alt="Страница {{ page_num }}" style="height:200px; object-fit: cover;">
+            </a>
+            <div class="card-body text-center">
+                <small>Страница {{ page_num }}</small>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+Flask==3.0.0
+Pillow==10.2.0
+torch>=2.0.0 --extra-index-url https://download.pytorch.org/whl/cpu
+torchvision>=0.15.0 --extra-index-url https://download.pytorch.org/whl/cpu
+transformers==4.36.0
+easyocr>=1.7.0
+python-docx==0.8.11
+waitress>=2.1.0
+onnxruntime>=1.16.0
+ultralytics>=8.0.0
+natsort>=8.0.0

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container-fluid mt-2">
+    <div class="row">
+        <!-- Панель инструментов -->
+        <div class="col-md-2 border-end bg-light" id="toolbar">
+            <h5 class="mt-2">Инструменты</h5>
+            <div class="d-grid gap-2">
+    <button class="btn btn-outline-primary btn-sm" id="btn-detect">Найти объекты</button>
+    <button class="btn btn-outline-success btn-sm" id="btn-save">Сохранить разметку</button>
+    <button class="btn btn-outline-danger btn-sm" id="btn-delete-selected">Удалить выбранное</button>
+    <button class="btn btn-outline-secondary btn-sm" id="btn-add-box">Добавить рамку</button>
+    <!-- Новая кнопка для смены класса выделенного -->
+    <button class="btn btn-outline-warning btn-sm" id="btn-change-class">Сменить класс</button>
+    <hr>
+    <button class="btn btn-outline-dark btn-sm" id="btn-prev-page">Назад</button>
+    <button class="btn btn-outline-dark btn-sm mt-1" id="btn-next-page">Вперёд</button>
+    <a href="/ocr/{{ project_id }}/{{ page }}" class="btn btn-outline-info btn-sm mt-2">Распознать текст</a>
+    <a href="/project/{{ project_id }}" class="btn btn-outline-info btn-sm mt-2">К проекту</a>
+</div>
+        </div>
+
+        <!-- Холст -->
+        <div class="col-md-10" style="overflow: auto; height: 90vh; border: 1px solid #ccc;">
+            <canvas id="c"></canvas>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- Подключаем Fabric.js из CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+<script>
+    // Глобальные переменные для JavaScript
+    const PROJECT_ID = "{{ project_id }}";
+    const PAGE_INDEX = {{ page }};
+    const TOTAL_PAGES = {{ total_pages }};
+    const IMAGE_URL = "{{ image_url }}";   // оригинальное изображение
+    const DETECT_API = `/api/projects/${PROJECT_ID}/pages/${PAGE_INDEX}/detect`;
+    const DETECTIONS_API = `/api/projects/${PROJECT_ID}/pages/${PAGE_INDEX}/detections`;
+</script>
+<script src="{{ url_for('static', filename='js/annotate.js') }}"></script>
+{% endblock %}

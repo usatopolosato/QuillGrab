@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h2>Создать новый проект</h2>
+  <form method="POST" enctype="multipart/form-data">
+    <div class="mb-3">
+      <label for="project_name" class="form-label">Название проекта</label>
+      <input type="text" class="form-control" id="project_name" name="name"
+             placeholder="Введите название или оставьте пустым">
+    </div>
+    <div class="mb-3">
+      <label for="archive" class="form-label">ZIP-архив с изображениями</label>
+      <input class="form-control" type="file" id="archive" name="archive" accept=".zip" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Загрузить</button>
+  </form>
+</div>
+{% endblock %}
