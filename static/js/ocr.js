@@ -32,20 +32,50 @@ window.addEventListener('load', () => {
 
 // ---------- Инициализация страницы ----------
 function initPage() {
-    // Сначала проверяем, есть ли уже результаты OCR
+    // Пытаемся загрузить готовый OCR
     fetch(API_OCR + '?edited=true')
         .then(res => {
             if (res.ok) return res.json();
             throw new Error('no ocr');
         })
         .then(data => {
-            // OCR уже существует – сразу отрисовываем его
+            // OCR уже существует – отрисовываем его
             renderOCR(data);
+            // После отрисовки OCR обязательно подгружаем детекции, чтобы кнопка работала
+            return loadDetectionsForReuse();
         })
         .catch(() => {
-            // OCR нет – загружаем детекции и отображаем их
+            // OCR нет – загружаем детекции и показываем их
             loadDetectionsAndShow();
         });
+}
+
+// Загружает детекции, не рисуя их, только для наполнения detectionBoxes
+async function loadDetectionsForReuse() {
+    try {
+        let res = await fetch(DETECTIONS_API + '?edited=true');
+        if (res.ok) {
+            let data = await res.json();
+            detectionBoxes = data.detections || [];
+            return;
+        }
+    } catch (e) { }
+    try {
+        let res = await fetch(DETECTIONS_API + '?edited=false');
+        if (res.ok) {
+            let data = await res.json();
+            detectionBoxes = data.detections || [];
+            return;
+        }
+    } catch (e) { }
+    // Если совсем ничего нет – запускаем авто-детекцию (но без отрисовки, только сохраняем данные)
+    try {
+        let res = await fetch(`/api/projects/${PROJECT_ID}/pages/${PAGE}/detect`, { method: 'POST' });
+        let data = await res.json();
+        detectionBoxes = data.detections || [];
+    } catch (e) {
+        console.error('Failed to load detections for reuse', e);
+    }
 }
 
 function loadDetectionsAndShow() {
@@ -214,7 +244,11 @@ function addLineToBox(boxId, text, bbox) {
 }
 
 // ---------- Запуск OCR ----------
-function runOCR() {
+async function runOCR() {
+    // Убеждаемся, что у нас есть актуальные детекции
+    if (!detectionBoxes.length) {
+        await loadDetectionsForReuse();
+    }
     const textBoxes = detectionBoxes.filter(b => b.class === 'text' || b.class === 'title');
     if (textBoxes.length === 0) {
         alert('Нет текстовых блоков для распознавания');
@@ -238,7 +272,6 @@ function runOCR() {
                 alert(body.error);
                 btn.disabled = false;
                 btn.textContent = 'Распознать текст';
-                // Восстановим детекционные рамки
                 if (detectionBoxes.length) drawDetectionBoxes(detectionBoxes);
             } else {
                 renderOCR(body);

@@ -19,10 +19,10 @@
             <div class="mt-2">
                 <a href="/annotate/{{ project_id }}/{{ page }}" class="btn btn-outline-secondary btn-sm">Назад к разметке</a>
                 {% if page > 1 %}
-                <a href="/ocr/{{ project_id }}/{{ page-1 }}" class="btn btn-outline-dark btn-sm">← Предыдущая</a>
+                <a href="/ocr/{{ project_id }}/{{ page-1 }}" class="btn btn-outline-dark btn-sm">Предыдущая</a>
                 {% endif %}
                 {% if page < total_pages %}
-                <a href="/ocr/{{ project_id }}/{{ page+1 }}" class="btn btn-outline-dark btn-sm">Следующая →</a>
+                <a href="/ocr/{{ project_id }}/{{ page+1 }}" class="btn btn-outline-dark btn-sm">Следующая</a>
                 {% endif %}
             </div>
         </div>
