@@ -1,11 +1,10 @@
-# app/routes.py
-
 import os
 import io
 import json
 import uuid
 import threading
 import logging
+import copy
 from flask import (Blueprint, render_template, request, redirect,
                    url_for, current_app, send_from_directory, send_file, jsonify)
 from PIL import Image
@@ -43,7 +42,6 @@ def create():
         if len(zip_bytes) > current_app.config['MAX_CONTENT_LENGTH']:
             return "Файл слишком большой", 400
 
-        # Пользовательское имя или имя файла
         project_name = request.form.get('name', '').strip()
         if not project_name:
             project_name = os.path.splitext(file.filename)[0]
@@ -111,7 +109,6 @@ def api_create_project():
         return jsonify({'error': 'Только ZIP'}), 400
 
     zip_bytes = file.read()
-    # Пользовательское имя или имя файла
     project_name = request.form.get('name', '').strip()
     if not project_name:
         project_name = os.path.splitext(file.filename)[0]
@@ -236,6 +233,7 @@ def api_run_ocr(project_id, page):
     ensure_dir(page_dir)
     ocr_status_path = os.path.join(page_dir, 'ocr_status.json')
     ocr_raw_path = os.path.join(page_dir, 'ocr_raw.json')
+    ocr_edited_path = os.path.join(page_dir, 'ocr_edited.json')
 
     # Если уже есть результат и не force – вернуть готовый
     if not force and os.path.exists(ocr_raw_path):
@@ -297,7 +295,6 @@ def api_run_ocr(project_id, page):
                 tmp_crop_path = os.path.join(page_dir, f"_tmp_{box['id']}.png")
                 box_crop.save(tmp_crop_path)
 
-                # PaddleOCR выполняет детекцию и распознавание внутри блока
                 lines_info = manager.ocr.predict(tmp_crop_path)
                 try:
                     os.remove(tmp_crop_path)
@@ -311,7 +308,7 @@ def api_run_ocr(project_id, page):
                     line_id = str(uuid.uuid4())[:8]
                     lb = line['bbox']
 
-                    # Вырезаем изображение строки (для миниатюр и сохранения)
+                    # Вырезаем изображение строки
                     try:
                         line_img = box_crop.crop((lb['x'], lb['y'],
                                                   lb['x'] + lb['width'],
@@ -353,19 +350,53 @@ def api_run_ocr(project_id, page):
                 with open(ocr_status_path, 'w') as f:
                     json.dump(status, f)
 
-            # Сохраняем результат
+            # ---------- ПОСТОБРАБОТКА ----------
             if not ocr_results['boxes']:
                 status['status'] = 'error'
                 status['message'] = 'После обработки не получено ни одной строки.'
             else:
+                # Сохраняем raw
                 with open(ocr_raw_path, 'w') as f:
                     json.dump(ocr_results, f, ensure_ascii=False, indent=2)
+
+                # Создаём edited-версию
+                edited_data = copy.deepcopy(ocr_results)
+
+                for box in edited_data['boxes']:
+                    lines = box['lines']
+
+                    # 1. SymSpell для каждой строки
+                    symspell_texts = []
+                    for line in lines:
+                        raw = line['text']
+                        if raw and raw != "[нет текста]":
+                            corrected = manager.spell_checker.correct_text(raw)
+                            symspell_texts.append(corrected)
+                        else:
+                            symspell_texts.append(raw if raw else '')
+
+                    # 2. LLM корректирует целый блок с нумерацией
+                    final_texts = manager.llm.correct_block_lines(symspell_texts)
+
+                    # 3. Записываем edited_text в строки
+                    for line, final_text in zip(lines, final_texts):
+                        line['edited_text'] = final_text
+
+                    # 4. Обновляем combined_text на основе edited_text
+                    all_edited = [line.get('edited_text') or line.get('text') or '' for line in lines]
+                    box['combined_text'] = ' '.join(all_edited) if all_edited else '[нет текста]'
+
+                # Сохраняем edited
+                with open(ocr_edited_path, 'w') as f:
+                    json.dump(edited_data, f, ensure_ascii=False, indent=2)
+
                 status['status'] = 'done'
+
             with open(ocr_status_path, 'w') as f:
                 json.dump(status, f)
 
         except Exception as e:
-            logger.error(f"OCR process fatal: {e}")
+            logger.exception("OCR process fatal")
             status['status'] = 'error'
             status['message'] = str(e)
             with open(ocr_status_path, 'w') as f:
