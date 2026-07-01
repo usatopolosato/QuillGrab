@@ -1,3 +1,5 @@
+# app/model_manager.py
+
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -28,6 +30,44 @@ except ImportError:
     logging.warning("llama-cpp-python не установлен. Установи: pip install llama-cpp-python")
 
 logger = logging.getLogger(__name__)
+
+
+# ---------- Утилита: нормализация алфавита (замена межъязыковых омоглифов) ----------
+def normalize_script(text: str) -> str:
+    """
+    Анализирует текст: если русских букв > 60%, заменяет похожие латинские на кириллические,
+    иначе заменяет кириллические на латинские (для английского текста).
+    """
+    if not text:
+        return text
+
+    cyrillic_count = sum(1 for ch in text if 'А' <= ch <= 'я' or ch in ('Ё', 'ё'))
+    latin_count = sum(1 for ch in text if 'A' <= ch <= 'Z' or 'a' <= ch <= 'z')
+    total_letters = cyrillic_count + latin_count
+    if total_letters == 0:
+        return text
+
+    cyrillic_ratio = cyrillic_count / total_letters
+
+    latin_to_cyrillic = {
+        'a': 'а', 'e': 'е', 'o': 'о', 'c': 'с', 'p': 'р', 'x': 'х',
+        'y': 'у', 'k': 'к', 'm': 'т', 't': 'т', 'b': 'в', 'h': 'н',
+        'A': 'А', 'E': 'Е', 'O': 'О', 'C': 'С', 'P': 'Р', 'X': 'Х',
+        'B': 'В', 'H': 'Н', 'K': 'К', 'M': 'М', 'T': 'Т', "Q": 'а', 'g': 'д', 'q': 'д'
+    }
+    cyrillic_to_latin = {
+        'а': 'a', 'е': 'e', 'о': 'o', 'с': 'c', 'р': 'p', 'х': 'x',
+        'у': 'y', 'к': 'k', 'м': 'm', 'т': 't', 'в': 'b', 'н': 'h',
+        'А': 'A', 'Е': 'E', 'О': 'O', 'С': 'C', 'Р': 'P', 'Х': 'X',
+        'В': 'B', 'Н': 'H', 'К': 'K', 'М': 'M', 'Т': 'T', 'ч': 'u', 'Ч': 'U', 'п': 'n', 'л': 'n'
+    }
+
+    if cyrillic_ratio > 0.6:
+        translation_table = str.maketrans(latin_to_cyrillic)
+        return text.translate(translation_table)
+    else:
+        translation_table = str.maketrans(cyrillic_to_latin)
+        return text.translate(translation_table)
 
 
 # ---------- SymSpell постобработчик ----------
@@ -79,7 +119,7 @@ class TextPostProcessor:
         return re.sub(pattern, replace_word, text)
 
 
-# ---------- LLM постобработчик ----------
+# ---------- LLM постобработчик (с жёстким контролем строк) ----------
 class LLMPostProcessor:
     def __init__(self, model_path, n_ctx=2048, temperature=0.1, verbose=False):
         self.llm = None
@@ -100,8 +140,9 @@ class LLMPostProcessor:
 
     def correct_block_lines(self, lines_texts):
         """
-        Принимает список сырых текстов строк блока.
-        Возвращает список исправленных текстов той же длины.
+        Принимает список сырых текстов строк блока (после SymSpell).
+        Возвращает список исправленных текстов строго той же длины и в том же порядке.
+        Если LLM не может вернуть все строки, для недостающих берётся оригинальный текст.
         """
         if not self.llm or not lines_texts:
             return lines_texts
@@ -112,21 +153,33 @@ class LLMPostProcessor:
             numbered_lines.append(f"[{i}] {text}")
         block_text = "\n".join(numbered_lines)
 
-        # Промпт
+        # Промпт, жёстко требующий сохранения порядка и количества строк
         system = (
-            "Ты — умный и опытный староста курса, который помогает расшифровать рукописные конспекты студентов после OCR.\n"
-            "Твоя задача — исправить жесткие опечатки распознавания, склеить разорванные слова и восстановить текст, сохраняя студенческую логику.\n\n"
-
-            "ИНСТРУКЦИЯ ПО РАБОТЕ С КОНСПЕКТАМИ:\n"
-            "1. Текст рукописный, поэтому буквы часто перепутаны (например, 'ж' похожа на 'ш', 'и' на 'п', '0' на 'о'). Исправляй это по смыслу.\n"
-            "2. ВНИМАНИЕ К СОКРАЩЕНИЯМ: Студенты часто сокращают слова (например: т.к., т.е., гос-во, к-во, ф-ция, ч-в). НЕ РАСШИФРОВЫВАЙ их в полные слова, если они понятны! Оставляй сокращения как есть, просто исправь в них мусорные символы.\n"
-            "3. Ориентируйся на контекст учебных предметов (наука, лекции, формулировки), чтобы угадать сильно искаженные OCR слова.\n\n"
-
-            "ЖЕСТКИЙ ФОРМАТ ОТВЕТА:\n"
-            "- На входе ты получаешь список строк вида: [номер] текст.\n"
-            "- Верни ТОЛЬКО исправленный текст, строго соблюдая исходную нумерацию строк.\n"
-            "- Каждая строка ОБЯЗАТЕЛЬНО должна начинаться с соответствующего ей '[номер]'.\n"
-            "- Запрещено: писать любые комментарии от себя или менять порядок строк. Только строки с номерами!"
+            "Ты — опытный лингвистический корректор текстов после OCR-распознавания рукописных конспектов. "
+            "Твоя задача — восстановить связный и осмысленный текст, исправить опечатки и склеить разорванные слова.\n\n"
+            "ПРАВИЛА ИСПРАВЛЕНИЯ И УГАДЫВАНИЯ:\n"
+            "1. Восстанавливай логику: если слово сильно повреждено, содержит много опечаток или превратилось в 'кашу' из букв, "
+            "используй контекст соседних слов и тему конспекта, чтобы УГАДАТЬ и заменить его на наиболее подходящее по смыслу реальное слово.\n"
+            "2. Сохраняй стиль: не меняй термины, сокращения (если они понятны) и общий стиль автора.\n"
+            "3. Оставляй без изменений только полную 'абракадабру' (набор случайных символов), которую физически невозможно вписать в контекст.\n\n"
+            "КРИТИЧЕСКИЕ СТРУКТУРНЫЕ ОГРАНИЧЕНИЯ (ЗАПРЕЩЕНО НАРУШАТЬ):\n"
+            "- Верни РОВНО столько же строк, сколько получил на вход.\n"
+            "- Строго сохраняй исходный порядок и нумерацию: [1] ..., [2] ..., [3] ... и так далее.\n"
+            "- НЕ склеивай несколько строк в одну. НЕ разделяй одну строку на несколько. Каждая строка на входе — это строго одна строка на выходе.\n\n"
+            "ПРИМЕРЫ РАБОТЫ (Изучи, как нужно угадывать по контексту):\n"
+            "Вход:\n"
+            "[1] Теорема Пиф агора: кв абрат гипотенузы\n"
+            "[2] равен сумме кв адратов к_а_т_е_т_о_в\n"
+            "[3] Рассм. треуг-ник АВС, где угл С = 90 град.\n"
+            "[4] склррс лин_ейн_ого ур-ия зависит от d\n"
+            "[5] xfg%#@ pd911 (нечитаемый шум)\n"
+            "Выход:\n"
+            "[1] Теорема Пифагора: квадрат гипотенузы\n"
+            "[2] равен сумме квадратов катетов\n"
+            "[3] Рассм. треуг-ник АВС, где угл С = 90 град.\n"
+            "[4] Скорость линейного ур-ия зависит от d\n"
+            "[5] xfg%#@ pd911 (нечитаемый шум)\n\n"
+            "Ответ должен содержать ТОЛЬКО финальные строки с номерами, без вводных фраз, приветствий и пояснений."
         )
 
         user = f"Текст для исправления:\n{block_text}"
@@ -146,32 +199,29 @@ class LLMPostProcessor:
             corrected_block = response['choices'][0]['message']['content'].strip()
         except Exception as e:
             logger.error(f"LLM correction failed: {e}")
-            return lines_texts  # fallback
+            return lines_texts  # fallback к SymSpell
 
-        # Парсим ответ: ищем строки вида [1] ... до [N]
-        corrected_lines = []
+        # Парсим ответ: ищем строки вида [номер] текст (нежадный поиск до следующего [номер] или конца)
         pattern = r'\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)'
         matches = re.findall(pattern, corrected_block, re.DOTALL)
-        if len(matches) == len(lines_texts):
-            matches_sorted = sorted(matches, key=lambda x: int(x[0]))
-            for _, text in matches_sorted:
-                corrected_lines.append(text.strip())
-        else:
-            logger.warning(f"LLM вернула {len(matches)} строк, ожидалось {len(lines_texts)}")
-            corrected_lines = []
-            for i, orig_text in enumerate(lines_texts, start=1):
-                found = False
-                for num_str, text in matches:
-                    if int(num_str) == i:
-                        corrected_lines.append(text.strip())
-                        found = True
-                        break
-                if not found:
-                    corrected_lines.append(orig_text)
-        return corrected_lines
+        corrected_dict = {}
+        for num_str, text in matches:
+            num = int(num_str)
+            if 1 <= num <= len(lines_texts):  # игнорируем номера вне допустимого диапазона
+                corrected_dict[num] = text.strip()
+
+        # Собираем итоговый список: если для номера есть исправление — берём его, иначе берём исходный SymSpell текст
+        result = []
+        for i, original_text in enumerate(lines_texts, start=1):
+            if i in corrected_dict:
+                result.append(corrected_dict[i])
+            else:
+                logger.warning(f"LLM не вернула строку {i}, используется оригинал")
+                result.append(original_text)
+        return result
 
 
-# ---------- PaddleOCRWrapper (без изменений) ----------
+# ---------- PaddleOCRWrapper ----------
 class PaddleOCRWrapper:
     def __init__(self):
         try:
@@ -267,7 +317,7 @@ class YOLODetector:
         return detections
 
 
-# ---------- LineDetector (оставляем, не используется) ----------
+# ---------- LineDetector (не используется, но сохранён) ----------
 class LineDetector:
     def __init__(self, device='cpu'):
         self.model = None
@@ -337,3 +387,10 @@ class ModelManager:
     def _load_ocr_model(self):
         logger.info("Loading PaddleOCR model...")
         return PaddleOCRWrapper()
+
+    def preprocess_text(self, text: str) -> str:
+        """Нормализация алфавита + исправление через SymSpell."""
+        if not text:
+            return text
+        normalized = normalize_script(text)
+        return self.spell_checker.correct_text(normalized)
