@@ -21,6 +21,29 @@ MAX_WIDTH = 1200
 MAX_HEIGHT = 1600
 
 
+def _safe_load_json(filepath, default=None):
+    """
+    Безопасно загружает JSON, пробуя различные кодировки.
+    Возвращает загруженные данные или default (по умолчанию None) при ошибке.
+    """
+    if not os.path.exists(filepath):
+        return default
+    encodings = ['utf-8', 'cp1251', 'latin-1']
+    for enc in encodings:
+        try:
+            with open(filepath, 'r', encoding=enc) as f:
+                return json.load(f)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    # Если всё не удалось, читаем с заменой плохих символов и пытаемся распарсить
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+            return json.loads(content)
+    except json.JSONDecodeError:
+        return default
+
+
 def _get_projects_file_path():
     storage = current_app.config['STORAGE_PATH']
     os.makedirs(storage, exist_ok=True)
@@ -29,10 +52,8 @@ def _get_projects_file_path():
 
 def load_projects():
     path = _get_projects_file_path()
-    if not os.path.exists(path):
-        return {}
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    data = _safe_load_json(path)
+    return data if data is not None else {}
 
 
 def save_projects(projects):
@@ -320,10 +341,7 @@ def get_detections(project_id, page_num, edited=False):
     pages_dir = os.path.join(proj['path'], 'pages', str(page_num))
     filename = 'detection_edited.json' if edited else 'detection_raw.json'
     json_path = os.path.join(pages_dir, filename)
-    if not os.path.exists(json_path):
-        return None
-    with open(json_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    return _safe_load_json(json_path)
 
 
 def save_detections(project_id, page_num, detections, edited=True):
@@ -367,3 +385,124 @@ def deskew_line(image: Image.Image, bbox: dict) -> Image.Image:
     rotated = cv2.warpAffine(np.array(cropped), M, (w, h),
                              flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     return Image.fromarray(rotated)
+
+
+def export_training_data(project_id):
+    """
+    Экспортирует данные проекта (детекции и OCR) в папку training_data.
+    Обновляет JSON файлы dataset.json для detection и ocr.
+    Возвращает словарь со статистикой.
+    """
+    proj = get_project(project_id)
+    if not proj:
+        raise ValueError("Проект не найден")
+
+    storage = current_app.config['STORAGE_PATH']
+    train_path = current_app.config.get('TRAINING_DATA_PATH', os.path.join(storage, 'training_data'))
+
+    detection_train_dir = os.path.join(train_path, 'detection')
+    ocr_train_dir = os.path.join(train_path, 'ocr')
+    os.makedirs(detection_train_dir, exist_ok=True)
+    os.makedirs(ocr_train_dir, exist_ok=True)
+
+    images_detection_dir = os.path.join(detection_train_dir, 'images')
+    images_ocr_dir = os.path.join(ocr_train_dir, 'images')
+    os.makedirs(images_detection_dir, exist_ok=True)
+    os.makedirs(images_ocr_dir, exist_ok=True)
+
+    detection_json_path = os.path.join(detection_train_dir, 'dataset.json')
+    ocr_json_path = os.path.join(ocr_train_dir, 'dataset.json')
+
+    # Загружаем существующие датасеты (с безопасным чтением)
+    detection_data = _safe_load_json(detection_json_path, default=[])
+    if detection_data is None:
+        detection_data = []
+    ocr_data = _safe_load_json(ocr_json_path, default=[])
+    if ocr_data is None:
+        ocr_data = []
+
+    detection_image_to_idx = {entry['image']: idx for idx, entry in enumerate(detection_data)}
+    ocr_image_to_idx = {entry['image']: idx for idx, entry in enumerate(ocr_data)}
+
+    stats = {'detection_pages': 0, 'ocr_lines': 0}
+
+    for page_num in range(1, proj['pages'] + 1):
+        page_dir = os.path.join(proj['path'], 'pages', str(page_num))
+        if not os.path.exists(page_dir):
+            continue
+
+        # ---------- Детекция ----------
+        detection_edited_path = os.path.join(page_dir, 'detection_edited.json')
+        detection_raw_path = os.path.join(page_dir, 'detection_raw.json')
+        detections = None
+        if os.path.exists(detection_edited_path):
+            detections = _safe_load_json(detection_edited_path)
+        if detections is None and os.path.exists(detection_raw_path):
+            detections = _safe_load_json(detection_raw_path)
+
+        if detections is not None and isinstance(detections, list) and len(detections) > 0:
+            img_filename = proj['images'][page_num - 1]
+            src_img_path = os.path.join(proj['path'], 'original', img_filename)
+            if os.path.exists(src_img_path):
+                ext = os.path.splitext(img_filename)[1]
+                dest_img_name = f"{project_id}_page_{page_num}{ext}"
+                dest_img_path = os.path.join(images_detection_dir, dest_img_name)
+                shutil.copy2(src_img_path, dest_img_path)
+                abs_path = os.path.abspath(dest_img_path)
+
+                if abs_path in detection_image_to_idx:
+                    idx = detection_image_to_idx[abs_path]
+                    detection_data[idx]['annotations'] = detections
+                else:
+                    detection_data.append({'image': abs_path, 'annotations': detections})
+                    detection_image_to_idx[abs_path] = len(detection_data) - 1
+                stats['detection_pages'] += 1
+
+        # ---------- OCR ----------
+        ocr_edited_path = os.path.join(page_dir, 'ocr_edited.json')
+        ocr_raw_path = os.path.join(page_dir, 'ocr_raw.json')
+        ocr_data_page = None
+        if os.path.exists(ocr_edited_path):
+            ocr_data_page = _safe_load_json(ocr_edited_path)
+        if ocr_data_page is None and os.path.exists(ocr_raw_path):
+            ocr_data_page = _safe_load_json(ocr_raw_path)
+
+        if ocr_data_page and isinstance(ocr_data_page, dict) and 'boxes' in ocr_data_page:
+            for box in ocr_data_page['boxes']:
+                box_id = box.get('box_id')
+                if not box_id:
+                    continue
+                for line in box.get('lines', []):
+                    line_id = line.get('line_id')
+                    if not line_id:
+                        continue
+                    text = line.get('edited_text')
+                    if text is None:
+                        text = line.get('text')
+                    if not text or text == "[нет текста]":
+                        continue
+
+                    line_crop_path = os.path.join(page_dir, 'lines', box_id, f"{line_id}.png")
+                    if not os.path.exists(line_crop_path):
+                        continue
+
+                    dest_crop_name = f"{project_id}_page_{page_num}_box_{box_id}_line_{line_id}.png"
+                    dest_crop_path = os.path.join(images_ocr_dir, dest_crop_name)
+                    shutil.copy2(line_crop_path, dest_crop_path)
+                    abs_crop_path = os.path.abspath(dest_crop_path)
+
+                    if abs_crop_path in ocr_image_to_idx:
+                        idx = ocr_image_to_idx[abs_crop_path]
+                        ocr_data[idx]['text'] = text
+                    else:
+                        ocr_data.append({'image': abs_crop_path, 'text': text})
+                        ocr_image_to_idx[abs_crop_path] = len(ocr_data) - 1
+                    stats['ocr_lines'] += 1
+
+    # Сохраняем обновлённые датасеты
+    with open(detection_json_path, 'w', encoding='utf-8') as f:
+        json.dump(detection_data, f, ensure_ascii=False, indent=2)
+    with open(ocr_json_path, 'w', encoding='utf-8') as f:
+        json.dump(ocr_data, f, ensure_ascii=False, indent=2)
+
+    return stats

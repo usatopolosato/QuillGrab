@@ -22,4 +22,39 @@
     </div>
     {% endfor %}
 </div>
+
+<!-- Новая кнопка экспорта -->
+<div class="mt-4">
+    <button id="exportBtn" class="btn btn-success">Выгрузить тренировочные данные</button>
+    <div id="exportResult" class="mt-2"></div>
+</div>
+
+<script>
+document.getElementById('exportBtn').addEventListener('click', function() {
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Экспорт...';
+    fetch('{{ url_for('main.api_export_training_data', project_id=project_id) }}', {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.textContent = 'Выгрузить тренировочные данные';
+        const resultDiv = document.getElementById('exportResult');
+        if (data.status === 'success') {
+            resultDiv.innerHTML = `<div class="alert alert-success">
+                Экспорт завершён: детекция — ${data.stats.detection_pages} страниц, OCR — ${data.stats.ocr_lines} строк.
+            </div>`;
+        } else {
+            resultDiv.innerHTML = `<div class="alert alert-danger">Ошибка: ${data.error}</div>`;
+        }
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.textContent = 'Выгрузить тренировочные данные';
+        document.getElementById('exportResult').innerHTML = `<div class="alert alert-danger">Ошибка запроса: ${error}</div>`;
+    });
+});
+</script>
 {% endblock %}

@@ -12,7 +12,8 @@ from flask import (Blueprint, render_template, request, redirect,
 from PIL import Image
 from app.utils import (create_project_from_zip, create_project_from_pdf,
                        create_project_from_images, get_project, delete_project, list_projects,
-                       detect_page, get_detections, save_detections, ensure_dir)
+                       detect_page, get_detections, save_detections, ensure_dir,
+                       export_training_data)
 
 main = Blueprint('main', __name__)
 logger = logging.getLogger(__name__)
@@ -558,6 +559,18 @@ def api_save_ocr(project_id, page):
                         rw.write(line.get('text', ''))
 
     return jsonify({'status': 'saved'})
+
+
+@main.route('/api/projects/<project_id>/export_training_data', methods=['POST'])
+def api_export_training_data(project_id):
+    try:
+        stats = export_training_data(project_id)
+        return jsonify({'status': 'success', 'stats': stats})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.exception("Export failed")
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @main.route('/api/projects/<project_id>/pages/<int:page>/lines/<path:filename>')
