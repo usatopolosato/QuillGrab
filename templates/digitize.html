@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}Оцифровка проекта {{ project.name }}{% endblock %}
+{% block content %}
+<div class="container">
+    <h1>Оцифровка проекта: {{ project.name }}</h1>
+
+    <div id="progress-container" class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <span id="status-text" class="fw-bold">Запуск...</span>
+            <span id="progress-text">0 / {{ project.pages }}</span>
+        </div>
+        <div class="progress" style="height: 30px;">
+            <div id="overall-progress" class="progress-bar progress-bar-striped progress-bar-animated"
+                 role="progressbar" style="width: 0%;"
+                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="{{ project.pages }}">
+                0%
+            </div>
+        </div>
+        <div id="debug-info" class="mt-2 text-muted small"></div>
+    </div>
+
+    <h5>Страницы</h5>
+    <div id="pages-list" class="row">
+        <!-- карточки страниц -->
+    </div>
+</div>
+
+<script>
+const PROJECT_ID = '{{ project_id }}';
+const TOTAL_PAGES = {{ project.pages }};
+
+function fetchUtf8(url, options = {}) {
+    return fetch(url, options)
+        .then(res => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.arrayBuffer();
+        })
+        .then(buffer => {
+            const decoder = new TextDecoder('utf-8');
+            const text = decoder.decode(buffer);
+            return JSON.parse(text);
+        });
+}
+
+function renderStatus(status) {
+    const total = status.total_pages || TOTAL_PAGES;
+
+    // Вычисляем количество обработанных страниц по их статусам
+    let processed = 0;
+    if (status.pages && status.pages.length) {
+        status.pages.forEach(function(page) {
+            // Страница считается обработанной, если её статус: done, skipped или error
+            if (page.status === 'done' || page.status === 'skipped' || page.status === 'error') {
+                processed++;
+            }
+        });
+    } else {
+        // Если по какой-то причине pages нет, используем поле processed_pages
+        processed = status.processed_pages || 0;
+    }
+
+    const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+
+    const bar = document.getElementById('overall-progress');
+    bar.style.width = percent + '%';
+    bar.textContent = percent + '%';
+    bar.setAttribute('aria-valuenow', processed);
+    bar.setAttribute('aria-valuemax', total);
+
+    document.getElementById('progress-text').textContent = processed + ' / ' + total;
+    document.getElementById('debug-info').textContent =
+        'Статус: ' + status.status + ', обработано: ' + processed + ', всего: ' + total;
+
+    const container = document.getElementById('pages-list');
+    container.innerHTML = '';
+    if (status.pages && status.pages.length) {
+        status.pages.forEach(function(pageInfo) {
+            const col = document.createElement('div');
+            col.className = 'col-md-3 col-sm-6 mb-3';
+
+            const card = document.createElement('div');
+            card.className = 'card';
+
+            let statusColor = 'secondary';
+            if (pageInfo.status === 'done' || pageInfo.status === 'skipped') statusColor = 'success';
+            else if (pageInfo.status === 'processing' || pageInfo.status === 'detecting' || pageInfo.status === 'ocr') statusColor = 'primary';
+            else if (pageInfo.status === 'error') statusColor = 'danger';
+            else if (pageInfo.status === 'pending') statusColor = 'secondary';
+
+            const header = document.createElement('div');
+            header.className = 'card-header bg-' + statusColor + ' text-white';
+            header.textContent = 'Страница ' + pageInfo.page;
+
+            const body = document.createElement('div');
+            body.className = 'card-body';
+
+            const statusP = document.createElement('p');
+            statusP.className = 'card-text';
+            statusP.textContent = 'Статус: ' + pageInfo.status;
+
+            const msgP = document.createElement('p');
+            msgP.className = 'card-text small';
+            msgP.textContent = pageInfo.message || '';
+
+            body.appendChild(statusP);
+            body.appendChild(msgP);
+            card.appendChild(header);
+            card.appendChild(body);
+            col.appendChild(card);
+            container.appendChild(col);
+        });
+    } else {
+        container.innerHTML = '<div class="alert alert-info">Нет данных о страницах</div>';
+    }
+
+    const statusText = document.getElementById('status-text');
+    if (status.status === 'processing') {
+        statusText.textContent = 'Идёт оцифровка...';
+    } else if (status.status === 'done') {
+        statusText.textContent = 'Оцифровка завершена';
+    } else if (status.status === 'error') {
+        statusText.textContent = 'Ошибка: ' + (status.message || '');
+    } else {
+        statusText.textContent = status.message || 'Ожидание...';
+    }
+}
+
+function init() {
+    fetchUtf8('/api/projects/' + PROJECT_ID + '/digitize/status')
+        .then(function(status) {
+            console.log('Status received:', status);
+            if (status.status === 'processing') {
+                renderStatus(status);
+                pollStatus();
+            } else if (status.status === 'done') {
+                renderStatus(status);
+            } else {
+                startDigitization();
+            }
+        })
+        .catch(function(err) {
+            console.error('Init error:', err);
+            document.getElementById('status-text').textContent = 'Ошибка проверки статуса';
+        });
+}
+
+function startDigitization() {
+    fetchUtf8('/api/projects/' + PROJECT_ID + '/digitize', { method: 'POST' })
+        .then(function(data) {
+            if (data.status === 'started') {
+                document.getElementById('status-text').textContent = 'Запуск оцифровки...';
+                pollStatus();
+            } else {
+                alert('Ошибка: ' + (data.error || 'неизвестная'));
+            }
+        })
+        .catch(function(err) {
+            alert('Ошибка запуска: ' + err);
+        });
+}
+
+function pollStatus() {
+    var interval = setInterval(function() {
+        fetchUtf8('/api/projects/' + PROJECT_ID + '/digitize/status')
+            .then(function(status) {
+                renderStatus(status);
+                if (status.status === 'done' || status.status === 'error') {
+                    clearInterval(interval);
+                }
+            })
+            .catch(function(err) {
+                console.error('Poll error:', err);
+            });
+    }, 1500);
+}
+
+window.onload = init;
+</script>
+{% endblock %}

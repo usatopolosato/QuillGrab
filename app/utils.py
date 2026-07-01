@@ -5,27 +5,25 @@ import json
 import uuid
 import zipfile
 import shutil
+import logging
+import threading
 from datetime import datetime
 
-import fitz  # PyMuPDF для работы с PDF
+import fitz  # PyMuPDF
 import cv2
 import numpy as np
 from PIL import Image
 from natsort import natsorted
 from flask import current_app
 
-PROJECTS_FILE = 'projects.json'
+logger = logging.getLogger(__name__)
 
-# Максимальные размеры изображений (ширина, высота)
+PROJECTS_FILE = 'projects.json'
 MAX_WIDTH = 1200
 MAX_HEIGHT = 1600
 
 
 def _safe_load_json(filepath, default=None):
-    """
-    Безопасно загружает JSON, пробуя различные кодировки.
-    Возвращает загруженные данные или default (по умолчанию None) при ошибке.
-    """
     if not os.path.exists(filepath):
         return default
     encodings = ['utf-8', 'cp1251', 'latin-1']
@@ -35,7 +33,6 @@ def _safe_load_json(filepath, default=None):
                 return json.load(f)
         except (UnicodeDecodeError, json.JSONDecodeError):
             continue
-    # Если всё не удалось, читаем с заменой плохих символов и пытаемся распарсить
     try:
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
@@ -63,8 +60,6 @@ def save_projects(projects):
 
 
 def resize_image_to_fit(image_path, max_width=MAX_WIDTH, max_height=MAX_HEIGHT):
-    """Масштабирует изображение, чтобы оно помещалось в max_width × max_height.
-    Перезаписывает исходный файл."""
     try:
         img = Image.open(image_path)
         w, h = img.size
@@ -74,11 +69,10 @@ def resize_image_to_fit(image_path, max_width=MAX_WIDTH, max_height=MAX_HEIGHT):
             img = img.resize(new_size, Image.LANCZOS)
             img.save(image_path)
     except Exception as e:
-        print(f"Ошибка при масштабировании {image_path}: {e}")
+        logger.error(f"Ошибка при масштабировании {image_path}: {e}")
 
 
 def _save_uploaded_image(file_storage, dest_dir):
-    """Сохраняет загруженный файл (FileStorage) в dest_dir, возвращает имя сохранённого файла."""
     original_name = file_storage.filename
     if not original_name:
         return None
@@ -86,7 +80,7 @@ def _save_uploaded_image(file_storage, dest_dir):
     allowed_ext = {'.jpg', '.jpeg', '.png', '.webp', '.tiff', '.tif', '.bmp'}
     ext = ext.lower()
     if ext not in allowed_ext:
-        ext = '.png'  # fallback
+        ext = '.png'
     dest = os.path.join(dest_dir, f"{base}{ext}")
     counter = 1
     while os.path.exists(dest):
@@ -97,22 +91,17 @@ def _save_uploaded_image(file_storage, dest_dir):
 
 
 def create_project_from_zip(name, zip_data):
-    """Создаёт проект из ZIP-архива с изображениями."""
     storage = current_app.config['STORAGE_PATH']
     project_id = str(uuid.uuid4())
     project_dir = os.path.join(storage, project_id)
     originals_dir = os.path.join(project_dir, 'original')
     tmp_zip = os.path.join(project_dir, 'archive.zip')
-
     try:
         os.makedirs(originals_dir)
-
         with open(tmp_zip, 'wb') as f:
             f.write(zip_data)
-
         image_names = []
         allowed_ext = {'.jpg', '.jpeg', '.png', '.webp', '.tiff', '.tif', '.bmp'}
-
         with zipfile.ZipFile(tmp_zip, 'r') as zf:
             for member in zf.namelist():
                 base = os.path.basename(member)
@@ -121,28 +110,21 @@ def create_project_from_zip(name, zip_data):
                 ext = os.path.splitext(member)[1].lower()
                 if ext not in allowed_ext:
                     continue
-
                 dest = os.path.join(originals_dir, base)
                 counter = 1
                 while os.path.exists(dest):
                     name_part, ext_part = os.path.splitext(base)
                     dest = os.path.join(originals_dir, f"{name_part}_{counter}{ext_part}")
                     counter += 1
-
                 with zf.open(member) as source, open(dest, 'wb') as target:
                     shutil.copyfileobj(source, target)
-
                 resize_image_to_fit(dest)
                 image_names.append(os.path.basename(dest))
-
         os.remove(tmp_zip)
-
         if not image_names:
             raise ValueError("В архиве нет поддерживаемых изображений")
-
         image_names = natsorted(image_names)
         pages_count = len(image_names)
-
         projects = load_projects()
         projects[project_id] = {
             'name': name,
@@ -152,9 +134,7 @@ def create_project_from_zip(name, zip_data):
             'images': image_names
         }
         save_projects(projects)
-
         return project_id, pages_count
-
     except Exception:
         if os.path.exists(project_dir):
             shutil.rmtree(project_dir, ignore_errors=True)
@@ -162,31 +142,26 @@ def create_project_from_zip(name, zip_data):
 
 
 def create_project_from_pdf(name, pdf_data):
-    """Создаёт проект из PDF файла, конвертируя страницы в изображения."""
     storage = current_app.config['STORAGE_PATH']
     project_id = str(uuid.uuid4())
     project_dir = os.path.join(storage, project_id)
     originals_dir = os.path.join(project_dir, 'original')
     os.makedirs(originals_dir, exist_ok=True)
-
     try:
         pdf_doc = fitz.open(stream=pdf_data, filetype="pdf")
         image_names = []
         for page_num in range(len(pdf_doc)):
             page = pdf_doc.load_page(page_num)
-            pix = page.get_pixmap(dpi=200)  # достаточно качественно
+            pix = page.get_pixmap(dpi=200)
             img_filename = f"page_{page_num + 1:03d}.png"
             img_path = os.path.join(originals_dir, img_filename)
             pix.save(img_path)
             resize_image_to_fit(img_path)
             image_names.append(img_filename)
-
         if not image_names:
             raise ValueError("Не удалось извлечь страницы из PDF")
-
         pdf_doc.close()
         pages_count = len(image_names)
-
         projects = load_projects()
         projects[project_id] = {
             'name': name,
@@ -196,9 +171,7 @@ def create_project_from_pdf(name, pdf_data):
             'images': image_names
         }
         save_projects(projects)
-
         return project_id, pages_count
-
     except Exception:
         if os.path.exists(project_dir):
             shutil.rmtree(project_dir, ignore_errors=True)
@@ -206,14 +179,11 @@ def create_project_from_pdf(name, pdf_data):
 
 
 def create_project_from_images(name, image_files):
-    """Создаёт проект из одного или нескольких загруженных изображений.
-    image_files: список объектов FileStorage"""
     storage = current_app.config['STORAGE_PATH']
     project_id = str(uuid.uuid4())
     project_dir = os.path.join(storage, project_id)
     originals_dir = os.path.join(project_dir, 'original')
     os.makedirs(originals_dir, exist_ok=True)
-
     try:
         image_names = []
         for file in image_files:
@@ -222,13 +192,10 @@ def create_project_from_images(name, image_files):
                 saved_path = os.path.join(originals_dir, saved_name)
                 resize_image_to_fit(saved_path)
                 image_names.append(saved_name)
-
         if not image_names:
             raise ValueError("Нет допустимых изображений")
-
         image_names = natsorted(image_names)
         pages_count = len(image_names)
-
         projects = load_projects()
         projects[project_id] = {
             'name': name,
@@ -238,18 +205,13 @@ def create_project_from_images(name, image_files):
             'images': image_names
         }
         save_projects(projects)
-
         return project_id, pages_count
-
     except Exception:
         if os.path.exists(project_dir):
             shutil.rmtree(project_dir, ignore_errors=True)
         raise
 
 
-# --------------------------------------------------------------
-# Старые общие функции (без изменений, кроме удалённой create_project)
-# --------------------------------------------------------------
 def get_project(project_id):
     return load_projects().get(project_id)
 
@@ -268,12 +230,7 @@ def delete_project(project_id):
 def list_projects():
     projects = load_projects()
     result = [
-        {
-            'id': pid,
-            'name': info['name'],
-            'created': info['created'],
-            'pages': info['pages']
-        }
+        {'id': pid, 'name': info['name'], 'created': info['created'], 'pages': info['pages']}
         for pid, info in projects.items()
     ]
     result.sort(key=lambda x: x['created'], reverse=True)
@@ -281,20 +238,17 @@ def list_projects():
 
 
 def detect_page(project_id, page_num, detector):
-    """Запускает детекцию, при необходимости сжимая изображение до наших лимитов."""
     proj = get_project(project_id)
     if not proj:
         raise FileNotFoundError("Проект не найден")
     if page_num < 1 or page_num > proj['pages']:
         raise ValueError("Неверный номер страницы")
-
     image_name = proj['images'][page_num - 1]
     originals_dir = os.path.join(proj['path'], 'original')
     image_path = os.path.join(originals_dir, image_name)
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Изображение {image_name} не найдено")
 
-    # Принудительно приводим к MAX_WIDTH × MAX_HEIGHT (если вдруг после загрузки не обрезалось)
     pil_img = Image.open(image_path)
     w, h = pil_img.size
     scale = min(MAX_WIDTH / w, MAX_HEIGHT / h, 1.0)
@@ -303,14 +257,13 @@ def detect_page(project_id, page_num, detector):
         pil_img = pil_img.resize(new_size, Image.LANCZOS)
         temp_path = os.path.join(originals_dir, f"_temp_{image_name}")
         pil_img.save(temp_path)
-        print(f"[detect] Изображение сжато до {new_size}")
+        logger.info(f"[detect] Изображение сжато до {new_size}")
         raw_boxes = detector.predict(temp_path)
         os.remove(temp_path)
     else:
         raw_boxes = detector.predict(image_path)
 
-    print(f"[detect] Найдено объектов: {len(raw_boxes)}")
-
+    logger.info(f"[detect] Найдено объектов: {len(raw_boxes)}")
     detections = []
     for idx, box in enumerate(raw_boxes):
         x1, y1, x2, y2 = box['x1'], box['y1'], box['x2'], box['y2']
@@ -323,14 +276,12 @@ def detect_page(project_id, page_num, detector):
             'height': round(y2 - y1),
             'confidence': round(box['conf'], 3)
         })
-
     pages_dir = os.path.join(proj['path'], 'pages', str(page_num))
     os.makedirs(pages_dir, exist_ok=True)
     json_path = os.path.join(pages_dir, 'detection_raw.json')
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(detections, f, indent=2, ensure_ascii=False)
-
-    print(f"[detect] Результат сохранён в {json_path}")
+    logger.info(f"[detect] Результат сохранён в {json_path}")
     return detections
 
 
@@ -356,16 +307,10 @@ def save_detections(project_id, page_num, detections, edited=True):
 
 
 def ensure_dir(path):
-    """Создаёт директорию, если она не существует."""
     os.makedirs(path, exist_ok=True)
 
 
 def deskew_line(image: Image.Image, bbox: dict) -> Image.Image:
-    """
-    Вырезает строку по bbox, исправляет наклон (если обнаружен).
-    bbox: {'x', 'y', 'width', 'height'}
-    Возвращает выпрямленное изображение строки.
-    """
     cropped = image.crop((bbox['x'], bbox['y'],
                           bbox['x'] + bbox['width'],
                           bbox['y'] + bbox['height']))
@@ -388,42 +333,26 @@ def deskew_line(image: Image.Image, bbox: dict) -> Image.Image:
 
 
 def export_training_data(project_id):
-    """
-    Экспортирует данные проекта (детекции и OCR) в папку training_data.
-    Обновляет JSON файлы dataset.json для detection и ocr.
-    Возвращает словарь со статистикой.
-    """
     proj = get_project(project_id)
     if not proj:
         raise ValueError("Проект не найден")
-
     storage = current_app.config['STORAGE_PATH']
     train_path = current_app.config.get('TRAINING_DATA_PATH', os.path.join(storage, 'training_data'))
-
     detection_train_dir = os.path.join(train_path, 'detection')
     ocr_train_dir = os.path.join(train_path, 'ocr')
     os.makedirs(detection_train_dir, exist_ok=True)
     os.makedirs(ocr_train_dir, exist_ok=True)
-
     images_detection_dir = os.path.join(detection_train_dir, 'images')
     images_ocr_dir = os.path.join(ocr_train_dir, 'images')
     os.makedirs(images_detection_dir, exist_ok=True)
     os.makedirs(images_ocr_dir, exist_ok=True)
-
     detection_json_path = os.path.join(detection_train_dir, 'dataset.json')
     ocr_json_path = os.path.join(ocr_train_dir, 'dataset.json')
 
-    # Загружаем существующие датасеты (с безопасным чтением)
-    detection_data = _safe_load_json(detection_json_path, default=[])
-    if detection_data is None:
-        detection_data = []
-    ocr_data = _safe_load_json(ocr_json_path, default=[])
-    if ocr_data is None:
-        ocr_data = []
-
+    detection_data = _safe_load_json(detection_json_path, default=[]) or []
+    ocr_data = _safe_load_json(ocr_json_path, default=[]) or []
     detection_image_to_idx = {entry['image']: idx for idx, entry in enumerate(detection_data)}
     ocr_image_to_idx = {entry['image']: idx for idx, entry in enumerate(ocr_data)}
-
     stats = {'detection_pages': 0, 'ocr_lines': 0}
 
     for page_num in range(1, proj['pages'] + 1):
@@ -431,7 +360,7 @@ def export_training_data(project_id):
         if not os.path.exists(page_dir):
             continue
 
-        # ---------- Детекция ----------
+        # Detection
         detection_edited_path = os.path.join(page_dir, 'detection_edited.json')
         detection_raw_path = os.path.join(page_dir, 'detection_raw.json')
         detections = None
@@ -439,8 +368,7 @@ def export_training_data(project_id):
             detections = _safe_load_json(detection_edited_path)
         if detections is None and os.path.exists(detection_raw_path):
             detections = _safe_load_json(detection_raw_path)
-
-        if detections is not None and isinstance(detections, list) and len(detections) > 0:
+        if detections and isinstance(detections, list) and len(detections) > 0:
             img_filename = proj['images'][page_num - 1]
             src_img_path = os.path.join(proj['path'], 'original', img_filename)
             if os.path.exists(src_img_path):
@@ -449,16 +377,14 @@ def export_training_data(project_id):
                 dest_img_path = os.path.join(images_detection_dir, dest_img_name)
                 shutil.copy2(src_img_path, dest_img_path)
                 abs_path = os.path.abspath(dest_img_path)
-
                 if abs_path in detection_image_to_idx:
-                    idx = detection_image_to_idx[abs_path]
-                    detection_data[idx]['annotations'] = detections
+                    detection_data[detection_image_to_idx[abs_path]]['annotations'] = detections
                 else:
                     detection_data.append({'image': abs_path, 'annotations': detections})
                     detection_image_to_idx[abs_path] = len(detection_data) - 1
                 stats['detection_pages'] += 1
 
-        # ---------- OCR ----------
+        # OCR
         ocr_edited_path = os.path.join(page_dir, 'ocr_edited.json')
         ocr_raw_path = os.path.join(page_dir, 'ocr_raw.json')
         ocr_data_page = None
@@ -466,7 +392,6 @@ def export_training_data(project_id):
             ocr_data_page = _safe_load_json(ocr_edited_path)
         if ocr_data_page is None and os.path.exists(ocr_raw_path):
             ocr_data_page = _safe_load_json(ocr_raw_path)
-
         if ocr_data_page and isinstance(ocr_data_page, dict) and 'boxes' in ocr_data_page:
             for box in ocr_data_page['boxes']:
                 box_id = box.get('box_id')
@@ -476,33 +401,250 @@ def export_training_data(project_id):
                     line_id = line.get('line_id')
                     if not line_id:
                         continue
-                    text = line.get('edited_text')
-                    if text is None:
-                        text = line.get('text')
+                    text = line.get('edited_text') or line.get('text')
                     if not text or text == "[нет текста]":
                         continue
-
                     line_crop_path = os.path.join(page_dir, 'lines', box_id, f"{line_id}.png")
                     if not os.path.exists(line_crop_path):
                         continue
-
                     dest_crop_name = f"{project_id}_page_{page_num}_box_{box_id}_line_{line_id}.png"
                     dest_crop_path = os.path.join(images_ocr_dir, dest_crop_name)
                     shutil.copy2(line_crop_path, dest_crop_path)
                     abs_crop_path = os.path.abspath(dest_crop_path)
-
                     if abs_crop_path in ocr_image_to_idx:
-                        idx = ocr_image_to_idx[abs_crop_path]
-                        ocr_data[idx]['text'] = text
+                        ocr_data[ocr_image_to_idx[abs_crop_path]]['text'] = text
                     else:
                         ocr_data.append({'image': abs_crop_path, 'text': text})
                         ocr_image_to_idx[abs_crop_path] = len(ocr_data) - 1
                     stats['ocr_lines'] += 1
 
-    # Сохраняем обновлённые датасеты
     with open(detection_json_path, 'w', encoding='utf-8') as f:
         json.dump(detection_data, f, ensure_ascii=False, indent=2)
     with open(ocr_json_path, 'w', encoding='utf-8') as f:
         json.dump(ocr_data, f, ensure_ascii=False, indent=2)
-
     return stats
+
+
+def run_ocr_sync(project_id, page_num, manager, proj):
+    page_dir = os.path.join(proj['path'], 'pages', str(page_num))
+    ensure_dir(page_dir)
+
+    detections = get_detections(project_id, page_num, edited=True)
+    if detections is None:
+        detections = get_detections(project_id, page_num, edited=False)
+    if detections is None:
+        detections = detect_page(project_id, page_num, manager.detector)
+
+    text_boxes = [box for box in detections if box['class'] in ('text', 'title')]
+    if not text_boxes:
+        raise ValueError("На странице нет текстовых блоков для OCR")
+
+    original_image_name = proj['images'][page_num - 1]
+    original_image_path = os.path.join(proj['path'], 'original', original_image_name)
+    full_img = Image.open(original_image_path)
+    ocr_results = {'boxes': []}
+
+    for box in text_boxes:
+        box_bbox = {'x': box['x'], 'y': box['y'], 'width': box['width'], 'height': box['height']}
+        try:
+            box_crop = full_img.crop((box['x'], box['y'],
+                                      box['x'] + box['width'],
+                                      box['y'] + box['height']))
+        except Exception as e:
+            logger.error(f"Не удалось вырезать блок {box['id']}: {e}")
+            continue
+
+        tmp_crop_path = os.path.join(page_dir, f"_tmp_{box['id']}.png")
+        box_crop.save(tmp_crop_path)
+        lines_info = manager.ocr.predict(tmp_crop_path)
+        try:
+            os.remove(tmp_crop_path)
+        except Exception:
+            pass
+
+        lines_data = []
+        combined_parts = []
+        for line in lines_info:
+            line_id = str(uuid.uuid4())[:8]
+            lb = line['bbox']
+            try:
+                line_img = box_crop.crop((lb['x'], lb['y'],
+                                          lb['x'] + lb['width'],
+                                          lb['y'] + lb['height']))
+                lines_dir = os.path.join(page_dir, 'lines', box['id'])
+                ensure_dir(lines_dir)
+                line_filename = f"{line_id}.png"
+                line_path = os.path.join(lines_dir, line_filename)
+                line_img.save(line_path)
+                crop_url = f"/api/projects/{project_id}/pages/{page_num}/lines/{box['id']}/{line_filename}"
+            except Exception as e:
+                logger.error(f"Не удалось сохранить кроп строки {line_id}: {e}")
+                crop_url = ""
+
+            text = line['text']
+            conf = line['confidence']
+            if not text.strip():
+                text = "[нет текста]"
+            lines_data.append({
+                'line_id': line_id,
+                'bbox': lb,
+                'crop_url': crop_url,
+                'text': text,
+                'confidence': round(conf, 3)
+            })
+            combined_parts.append(text.strip())
+
+        ocr_results['boxes'].append({
+            'box_id': box['id'],
+            'class': box['class'],
+            'bbox': box_bbox,
+            'lines': lines_data,
+            'combined_text': ' '.join(combined_parts) if combined_parts else "[нет текста]"
+        })
+
+    if not ocr_results['boxes']:
+        raise ValueError("Не получено ни одной строки при OCR")
+
+    import copy
+    edited_data = copy.deepcopy(ocr_results)
+    for box in edited_data['boxes']:
+        lines = box['lines']
+        symspell_texts = []
+        for line in lines:
+            raw = line['text']
+            if raw and raw != "[нет текста]":
+                corrected = manager.spell_checker.correct_text(raw)
+                symspell_texts.append(corrected)
+            else:
+                symspell_texts.append(raw if raw else '')
+        final_texts = manager.llm.correct_block_lines(symspell_texts)
+        for line, final_text in zip(lines, final_texts):
+            line['edited_text'] = final_text
+        all_edited = [line.get('edited_text') or line.get('text') or '' for line in lines]
+        box['combined_text'] = ' '.join(all_edited) if all_edited else '[нет текста]'
+
+    ocr_raw_path = os.path.join(page_dir, 'ocr_raw.json')
+    ocr_edited_path = os.path.join(page_dir, 'ocr_edited.json')
+    with open(ocr_raw_path, 'w', encoding='utf-8') as f:
+        json.dump(ocr_results, f, ensure_ascii=False, indent=2)
+    with open(ocr_edited_path, 'w', encoding='utf-8') as f:
+        json.dump(edited_data, f, ensure_ascii=False, indent=2)
+
+    status_path = os.path.join(page_dir, 'ocr_status.json')
+    with open(status_path, 'w', encoding='utf-8') as f:
+        json.dump({'status': 'done',
+                   'boxes_done': len(text_boxes),
+                   'total_boxes': len(text_boxes)}, f)
+
+
+def save_status(status_path, status):
+    with open(status_path, 'w', encoding='utf-8') as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
+
+
+# --------------------------------------------------------------
+# ОЦИФРОВКА ПРОЕКТА (с передачей app)
+# --------------------------------------------------------------
+def digitize_project(project_id, manager, app):
+    proj = get_project(project_id)
+    if not proj:
+        raise ValueError("Проект не найден")
+
+    status_path = os.path.join(proj['path'], 'digitize_status.json')
+    status = {
+        'status': 'processing',
+        'total_pages': proj['pages'],
+        'processed_pages': 0,
+        'pages': [{'page': i, 'status': 'pending', 'message': ''} for i in range(1, proj['pages'] + 1)]
+    }
+    save_status(status_path, status)
+    logger.info(f"Digitization started for project {project_id}")
+
+    def process():
+        try:
+            with app.app_context():
+                if not manager:
+                    logger.error("Model manager not available")
+                    status['status'] = 'error'
+                    status['message'] = 'Модели не загружены'
+                    save_status(status_path, status)
+                    return
+
+                for page_num in range(1, proj['pages'] + 1):
+                    page_status = status['pages'][page_num - 1]
+                    page_dir = os.path.join(proj['path'], 'pages', str(page_num))
+
+                    detection_exists = os.path.exists(os.path.join(page_dir, 'detection_raw.json'))
+                    ocr_exists = os.path.exists(os.path.join(page_dir, 'ocr_raw.json'))
+
+                    if detection_exists and ocr_exists:
+                        page_status['status'] = 'skipped'
+                        page_status['message'] = 'Уже оцифровано'
+                        status['processed_pages'] += 1
+                        save_status(status_path, status)
+                        continue
+
+                    # Детекция
+                    if not detection_exists:
+                        page_status['status'] = 'detecting'
+                        save_status(status_path, status)
+                        try:
+                            detections = detect_page(project_id, page_num, manager.detector)
+                            page_status['message'] = f'Найдено {len(detections)} блоков'
+                        except Exception as e:
+                            logger.exception(f"Detection failed for page {page_num}")
+                            page_status['status'] = 'error'
+                            page_status['message'] = f'Ошибка детекции: {str(e)}'
+                            status['processed_pages'] += 1
+                            save_status(status_path, status)
+                            continue
+                    else:
+                        detections = get_detections(project_id, page_num, edited=False)
+                        if detections is None:
+                            detections = get_detections(project_id, page_num, edited=True)
+                        if not detections:
+                            page_status['status'] = 'error'
+                            page_status['message'] = 'Детекция есть, но не загружается'
+                            status['processed_pages'] += 1
+                            save_status(status_path, status)
+                            continue
+                    # OCR, если отсутствует
+                    if not ocr_exists:
+                        page_status['status'] = 'ocr'
+                        save_status(status_path, status)
+                        try:
+                            run_ocr_sync(project_id, page_num, manager, proj)
+                            page_status['status'] = 'done'
+                            page_status['message'] = 'OCR завершён'
+                        except Exception as e:
+                            logger.exception(f"OCR failed for page {page_num}")
+                            page_status['status'] = 'error'
+                            if str(e) == 'На странице нет текстовых блоков для OCR':
+                                page_status['status'] = 'done'
+                                page_status['message'] = 'Нет текстовых блоков, OCR не требуется'
+                                continue
+
+                            page_status['message'] = f'Ошибка OCR: {str(e)}'
+                            status['processed_pages'] += 1
+                            save_status(status_path, status)
+                            continue
+                    else:
+                        page_status['status'] = 'done'
+                        page_status['message'] = 'Уже оцифровано (OCR exists)'
+
+                    if page_status['status'] != 'skipped':
+                        status['processed_pages'] += 1
+                    save_status(status_path, status)
+
+                all_done = all(p['status'] in ('done', 'skipped') for p in status['pages'])
+                status['status'] = 'done'
+                status['message'] = 'Оцифровка завершена' if all_done else 'Оцифровка завершена с ошибками'
+                save_status(status_path, status)
+        except Exception as e:
+            logger.exception(f"Fatal error in digitization process for project {project_id}")
+            status['status'] = 'error'
+            status['message'] = f'Критическая ошибка: {str(e)}'
+            save_status(status_path, status)
+
+    threading.Thread(target=process, name=f"Digitize-{project_id}").start()
+    return status_path

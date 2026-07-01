@@ -13,7 +13,7 @@ from PIL import Image
 from app.utils import (create_project_from_zip, create_project_from_pdf,
                        create_project_from_images, get_project, delete_project, list_projects,
                        detect_page, get_detections, save_detections, ensure_dir,
-                       export_training_data)
+                       export_training_data, export_training_data, digitize_project)
 
 main = Blueprint('main', __name__)
 logger = logging.getLogger(__name__)
@@ -583,3 +583,50 @@ def serve_line_image(project_id, page, filename):
     if not os.path.exists(file_path):
         return "File not found", 404
     return send_file(file_path, mimetype='image/png')
+
+
+@main.route('/digitize/<project_id>')
+def digitize_page(project_id):
+    proj = get_project(project_id)
+    if not proj:
+        return "Проект не найден", 404
+    return render_template('digitize.html', project_id=project_id, project=proj)
+
+
+@main.route('/api/projects/<project_id>/digitize', methods=['POST'])
+def api_start_digitize(project_id):
+    proj = get_project(project_id)
+    if not proj:
+        return jsonify({'error': 'Project not found'}), 404
+
+    status_path = os.path.join(proj['path'], 'digitize_status.json')
+    if os.path.exists(status_path):
+        with open(status_path, 'r', encoding='utf-8') as f:  # явно utf-8
+            status = json.load(f)
+        if status.get('status') == 'processing':
+            return jsonify({'error': 'Digitization already running'}), 409
+
+    manager = current_app.config.get('MODEL_MANAGER')
+    if not manager:
+        return jsonify({'error': 'Model manager not available'}), 500
+
+    # Получаем объект приложения
+    app = current_app._get_current_object()
+
+    try:
+        digitize_project(project_id, manager, app)   # передаём app
+        return jsonify({'status': 'started'}), 202
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@main.route('/api/projects/<project_id>/digitize/status')
+def api_digitize_status(project_id):
+    proj = get_project(project_id)
+    if not proj:
+        return jsonify({'error': 'Project not found'}), 404
+    status_path = os.path.join(proj['path'], 'digitize_status.json')
+    if not os.path.exists(status_path):
+        return jsonify({'status': 'not_started'})
+    with open(status_path, 'r', encoding='utf-8') as f:
+        return jsonify(json.load(f))

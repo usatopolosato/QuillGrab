@@ -23,8 +23,9 @@
     {% endfor %}
 </div>
 
-<!-- Новая кнопка экспорта -->
+<!-- Кнопки -->
 <div class="mt-4">
+    <a href="{{ url_for('main.digitize_page', project_id=project_id) }}" class="btn btn-primary">Начать оцифровку</a>
     <button id="exportBtn" class="btn btn-success">Выгрузить тренировочные данные</button>
     <div id="exportResult" class="mt-2"></div>
 </div>
