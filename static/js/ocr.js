@@ -2,7 +2,7 @@
 
 let canvas;
 let ocrData = null;
-let detectionBoxes = [];        // загруженные детекции
+let detectionBoxes = [];
 let ocrBoxes = [];
 let manualMode = false;
 let drawStart = null;
@@ -30,27 +30,32 @@ window.addEventListener('load', () => {
     canvas.on('mouse:up', onMouseUp);
 });
 
-// ---------- Инициализация страницы ----------
+// ---------- Инициализация ----------
 function initPage() {
-    // Пытаемся загрузить готовый OCR
-    fetch(API_OCR + '?edited=true')
+    loadOCR(true);
+}
+
+function loadOCR(edited) {
+    const url = API_OCR + (edited ? '?edited=true' : '?edited=false');
+    fetch(url)
         .then(res => {
             if (res.ok) return res.json();
             throw new Error('no ocr');
         })
         .then(data => {
-            // OCR уже существует – отрисовываем его
             renderOCR(data);
-            // После отрисовки OCR обязательно подгружаем детекции, чтобы кнопка работала
-            return loadDetectionsForReuse();
+            loadDetectionsForReuse();
         })
         .catch(() => {
-            // OCR нет – загружаем детекции и показываем их
-            loadDetectionsAndShow();
+            if (edited) {
+                loadOCR(false);
+            } else {
+                loadDetectionsAndShow();
+            }
         });
 }
 
-// Загружает детекции, не рисуя их, только для наполнения detectionBoxes
+// Загружает детекции, не рисуя их
 async function loadDetectionsForReuse() {
     try {
         let res = await fetch(DETECTIONS_API + '?edited=true');
@@ -59,7 +64,7 @@ async function loadDetectionsForReuse() {
             detectionBoxes = data.detections || [];
             return;
         }
-    } catch (e) { }
+    } catch (e) {}
     try {
         let res = await fetch(DETECTIONS_API + '?edited=false');
         if (res.ok) {
@@ -67,8 +72,7 @@ async function loadDetectionsForReuse() {
             detectionBoxes = data.detections || [];
             return;
         }
-    } catch (e) { }
-    // Если совсем ничего нет – запускаем авто-детекцию (но без отрисовки, только сохраняем данные)
+    } catch (e) {}
     try {
         let res = await fetch(`/api/projects/${PROJECT_ID}/pages/${PAGE}/detect`, { method: 'POST' });
         let data = await res.json();
@@ -93,7 +97,6 @@ function loadDetectionsAndShow() {
                         detectionBoxes = data.detections;
                         drawDetectionBoxes(detectionBoxes);
                     } else {
-                        // Совсем нет разметки – запускаем авто‑детекцию
                         runDetectionAndThenDraw();
                     }
                 });
@@ -119,9 +122,7 @@ function runDetectionAndThenDraw() {
         });
 }
 
-// ---------- Отрисовка детекционных рамок ----------
 function drawDetectionBoxes(boxes) {
-    // Полностью очищаем canvas
     canvas.getObjects().forEach(obj => canvas.remove(obj));
     boxes.forEach(box => {
         const color = getColorByClass(box.class);
@@ -155,7 +156,7 @@ function getColorByClass(cls) {
     }
 }
 
-// ---------- Ручное добавление строки (режим рисования) ----------
+// ---------- Ручное добавление строки ----------
 function enterDrawingModeForBox(boxId) {
     if (manualMode) return;
     currentBoxForLine = boxId;
@@ -245,7 +246,6 @@ function addLineToBox(boxId, text, bbox) {
 
 // ---------- Запуск OCR ----------
 async function runOCR() {
-    // Убеждаемся, что у нас есть актуальные детекции
     if (!detectionBoxes.length) {
         await loadDetectionsForReuse();
     }
@@ -258,7 +258,6 @@ async function runOCR() {
     btn.disabled = true;
     btn.textContent = 'Распознавание...';
 
-    // Очищаем детекционные рамки перед запросом
     canvas.getObjects().forEach(obj => canvas.remove(obj));
     canvas.renderAll();
 
@@ -329,10 +328,9 @@ function pollStatus() {
     }, 2000);
 }
 
-// ---------- Отрисовка результатов OCR ----------
+// ---------- Отрисовка OCR ----------
 function renderOCR(data) {
     ocrData = data;
-    // Полностью очищаем canvas
     canvas.getObjects().forEach(obj => canvas.remove(obj));
     ocrBoxes = [];
 

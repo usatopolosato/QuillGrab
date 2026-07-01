@@ -470,7 +470,6 @@ def api_ocr_status(project_id, page):
 
 @main.route('/api/projects/<project_id>/pages/<int:page>/ocr', methods=['GET'])
 def api_get_ocr(project_id, page):
-    """Возвращает ocr_raw.json или ocr_edited.json"""
     edited = request.args.get('edited', 'false').lower() == 'true'
     proj = get_project(project_id)
     if not proj:
@@ -480,9 +479,8 @@ def api_get_ocr(project_id, page):
     filepath = os.path.join(page_dir, filename)
     if not os.path.exists(filepath):
         return jsonify({'error': 'No OCR data'}), 404
-    with open(filepath) as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         return jsonify(json.load(f))
-
 
 @main.route('/api/projects/<project_id>/pages/<int:page>/ocr', methods=['PUT'])
 def api_save_ocr(project_id, page):
