@@ -7,6 +7,7 @@ import zipfile
 import shutil
 from datetime import datetime
 
+import fitz  # PyMuPDF для работы с PDF
 import cv2
 import numpy as np
 from PIL import Image
@@ -41,15 +42,12 @@ def save_projects(projects):
 
 
 def resize_image_to_fit(image_path, max_width=MAX_WIDTH, max_height=MAX_HEIGHT):
-    """Масштабирует изображение так, чтобы оно целиком помещалось
-    в прямоугольник max_width × max_height с сохранением пропорций.
-    Перезаписывает исходный файл.
-    """
+    """Масштабирует изображение, чтобы оно помещалось в max_width × max_height.
+    Перезаписывает исходный файл."""
     try:
         img = Image.open(image_path)
         w, h = img.size
-        # Вычисляем коэффициент масштабирования
-        scale = min(max_width / w, max_height / h, 1.0)  # не увеличиваем, если меньше
+        scale = min(max_width / w, max_height / h, 1.0)
         if scale < 1.0:
             new_size = (int(w * scale), int(h * scale))
             img = img.resize(new_size, Image.LANCZOS)
@@ -58,7 +56,27 @@ def resize_image_to_fit(image_path, max_width=MAX_WIDTH, max_height=MAX_HEIGHT):
         print(f"Ошибка при масштабировании {image_path}: {e}")
 
 
-def create_project(name, zip_data):
+def _save_uploaded_image(file_storage, dest_dir):
+    """Сохраняет загруженный файл (FileStorage) в dest_dir, возвращает имя сохранённого файла."""
+    original_name = file_storage.filename
+    if not original_name:
+        return None
+    base, ext = os.path.splitext(original_name)
+    allowed_ext = {'.jpg', '.jpeg', '.png', '.webp', '.tiff', '.tif', '.bmp'}
+    ext = ext.lower()
+    if ext not in allowed_ext:
+        ext = '.png'  # fallback
+    dest = os.path.join(dest_dir, f"{base}{ext}")
+    counter = 1
+    while os.path.exists(dest):
+        dest = os.path.join(dest_dir, f"{base}_{counter}{ext}")
+        counter += 1
+    file_storage.save(dest)
+    return os.path.basename(dest)
+
+
+def create_project_from_zip(name, zip_data):
+    """Создаёт проект из ZIP-архива с изображениями."""
     storage = current_app.config['STORAGE_PATH']
     project_id = str(uuid.uuid4())
     project_dir = os.path.join(storage, project_id)
@@ -93,9 +111,7 @@ def create_project(name, zip_data):
                 with zf.open(member) as source, open(dest, 'wb') as target:
                     shutil.copyfileobj(source, target)
 
-                # Приводим изображение к допустимым размерам (1200×1600)
                 resize_image_to_fit(dest)
-
                 image_names.append(os.path.basename(dest))
 
         os.remove(tmp_zip)
@@ -124,6 +140,95 @@ def create_project(name, zip_data):
         raise
 
 
+def create_project_from_pdf(name, pdf_data):
+    """Создаёт проект из PDF файла, конвертируя страницы в изображения."""
+    storage = current_app.config['STORAGE_PATH']
+    project_id = str(uuid.uuid4())
+    project_dir = os.path.join(storage, project_id)
+    originals_dir = os.path.join(project_dir, 'original')
+    os.makedirs(originals_dir, exist_ok=True)
+
+    try:
+        pdf_doc = fitz.open(stream=pdf_data, filetype="pdf")
+        image_names = []
+        for page_num in range(len(pdf_doc)):
+            page = pdf_doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=200)  # достаточно качественно
+            img_filename = f"page_{page_num + 1:03d}.png"
+            img_path = os.path.join(originals_dir, img_filename)
+            pix.save(img_path)
+            resize_image_to_fit(img_path)
+            image_names.append(img_filename)
+
+        if not image_names:
+            raise ValueError("Не удалось извлечь страницы из PDF")
+
+        pdf_doc.close()
+        pages_count = len(image_names)
+
+        projects = load_projects()
+        projects[project_id] = {
+            'name': name,
+            'created': datetime.now().isoformat(),
+            'pages': pages_count,
+            'path': project_dir,
+            'images': image_names
+        }
+        save_projects(projects)
+
+        return project_id, pages_count
+
+    except Exception:
+        if os.path.exists(project_dir):
+            shutil.rmtree(project_dir, ignore_errors=True)
+        raise
+
+
+def create_project_from_images(name, image_files):
+    """Создаёт проект из одного или нескольких загруженных изображений.
+    image_files: список объектов FileStorage"""
+    storage = current_app.config['STORAGE_PATH']
+    project_id = str(uuid.uuid4())
+    project_dir = os.path.join(storage, project_id)
+    originals_dir = os.path.join(project_dir, 'original')
+    os.makedirs(originals_dir, exist_ok=True)
+
+    try:
+        image_names = []
+        for file in image_files:
+            saved_name = _save_uploaded_image(file, originals_dir)
+            if saved_name:
+                saved_path = os.path.join(originals_dir, saved_name)
+                resize_image_to_fit(saved_path)
+                image_names.append(saved_name)
+
+        if not image_names:
+            raise ValueError("Нет допустимых изображений")
+
+        image_names = natsorted(image_names)
+        pages_count = len(image_names)
+
+        projects = load_projects()
+        projects[project_id] = {
+            'name': name,
+            'created': datetime.now().isoformat(),
+            'pages': pages_count,
+            'path': project_dir,
+            'images': image_names
+        }
+        save_projects(projects)
+
+        return project_id, pages_count
+
+    except Exception:
+        if os.path.exists(project_dir):
+            shutil.rmtree(project_dir, ignore_errors=True)
+        raise
+
+
+# --------------------------------------------------------------
+# Старые общие функции (без изменений, кроме удалённой create_project)
+# --------------------------------------------------------------
 def get_project(project_id):
     return load_projects().get(project_id)
 

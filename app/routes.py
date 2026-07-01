@@ -1,3 +1,5 @@
+# app/routes.py
+
 import os
 import io
 import json
@@ -8,9 +10,9 @@ import copy
 from flask import (Blueprint, render_template, request, redirect,
                    url_for, current_app, send_from_directory, send_file, jsonify)
 from PIL import Image
-from app.utils import (create_project, get_project, delete_project, list_projects,
-                       detect_page, get_detections, save_detections,
-                       ensure_dir)
+from app.utils import (create_project_from_zip, create_project_from_pdf,
+                       create_project_from_images, get_project, delete_project, list_projects,
+                       detect_page, get_detections, save_detections, ensure_dir)
 
 main = Blueprint('main', __name__)
 logger = logging.getLogger(__name__)
@@ -30,24 +32,48 @@ def index():
 @main.route('/create', methods=['GET', 'POST'])
 def create():
     if request.method == 'POST':
+        # Проверяем, что файлы вообще отправлены
         if 'archive' not in request.files:
-            return "Нет файла", 400
-        file = request.files['archive']
-        if file.filename == '':
-            return "Файл не выбран", 400
-        if not file.filename.lower().endswith('.zip'):
-            return "Только ZIP-архивы", 400
+            return "Нет файлов", 400
+        files = request.files.getlist('archive')
 
-        zip_bytes = file.read()
-        if len(zip_bytes) > current_app.config['MAX_CONTENT_LENGTH']:
-            return "Файл слишком большой", 400
+        # Отфильтруем пустые
+        files = [f for f in files if f.filename != '']
+        if not files:
+            return "Файлы не выбраны", 400
 
+        # Если один файл – определяем тип по расширению
         project_name = request.form.get('name', '').strip()
-        if not project_name:
-            project_name = os.path.splitext(file.filename)[0]
+        if not project_name and files:
+            project_name = os.path.splitext(files[0].filename)[0]
 
         try:
-            project_id, pages = create_project(project_name, zip_bytes)
+            # Смотрим расширение первого файла (если несколько – считаем изображениями)
+            first_ext = os.path.splitext(files[0].filename)[1].lower()
+            if first_ext == '.zip':
+                if len(files) != 1:
+                    return "ZIP должен быть один", 400
+                zip_bytes = files[0].read()
+                if len(zip_bytes) > current_app.config['MAX_CONTENT_LENGTH']:
+                    return "Файл слишком большой", 400
+                project_id, pages = create_project_from_zip(project_name, zip_bytes)
+
+            elif first_ext == '.pdf':
+                if len(files) != 1:
+                    return "PDF должен быть один", 400
+                pdf_bytes = files[0].read()
+                if len(pdf_bytes) > current_app.config['MAX_CONTENT_LENGTH']:
+                    return "Файл слишком большой", 400
+                project_id, pages = create_project_from_pdf(project_name, pdf_bytes)
+
+            else:
+                # Считаем, что это изображения (можно несколько)
+                for f in files:
+                    ext = os.path.splitext(f.filename)[1].lower()
+                    if ext not in {'.jpg', '.jpeg', '.png', '.webp', '.tiff', '.tif', '.bmp'}:
+                        return f"Неподдерживаемый тип файла: {f.filename}", 400
+                project_id, pages = create_project_from_images(project_name, files)
+
         except ValueError as e:
             return str(e), 400
 
@@ -103,18 +129,41 @@ def ocr_page(project_id, page):
 @main.route('/api/projects', methods=['POST'])
 def api_create_project():
     if 'archive' not in request.files:
-        return jsonify({'error': 'Нет файла'}), 400
-    file = request.files['archive']
-    if file.filename == '' or not file.filename.lower().endswith('.zip'):
-        return jsonify({'error': 'Только ZIP'}), 400
+        return jsonify({'error': 'Нет файлов'}), 400
+    files = request.files.getlist('archive')
+    files = [f for f in files if f.filename != '']
+    if not files:
+        return jsonify({'error': 'Файлы не выбраны'}), 400
 
-    zip_bytes = file.read()
     project_name = request.form.get('name', '').strip()
-    if not project_name:
-        project_name = os.path.splitext(file.filename)[0]
+    if not project_name and files:
+        project_name = os.path.splitext(files[0].filename)[0]
 
     try:
-        project_id, pages = create_project(project_name, zip_bytes)
+        first_ext = os.path.splitext(files[0].filename)[1].lower()
+        if first_ext == '.zip':
+            if len(files) != 1:
+                return jsonify({'error': 'ZIP должен быть один'}), 400
+            zip_bytes = files[0].read()
+            if len(zip_bytes) > current_app.config['MAX_CONTENT_LENGTH']:
+                return jsonify({'error': 'Файл слишком большой'}), 400
+            project_id, pages = create_project_from_zip(project_name, zip_bytes)
+
+        elif first_ext == '.pdf':
+            if len(files) != 1:
+                return jsonify({'error': 'PDF должен быть один'}), 400
+            pdf_bytes = files[0].read()
+            if len(pdf_bytes) > current_app.config['MAX_CONTENT_LENGTH']:
+                return jsonify({'error': 'Файл слишком большой'}), 400
+            project_id, pages = create_project_from_pdf(project_name, pdf_bytes)
+
+        else:
+            for f in files:
+                ext = os.path.splitext(f.filename)[1].lower()
+                if ext not in {'.jpg', '.jpeg', '.png', '.webp', '.tiff', '.tif', '.bmp'}:
+                    return jsonify({'error': f'Неподдерживаемый тип: {f.filename}'}), 400
+            project_id, pages = create_project_from_images(project_name, files)
+
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 

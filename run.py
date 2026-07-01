@@ -7,4 +7,4 @@ app = create_app()
 if __name__ == '__main__':
     # Открываем браузер через 1.5 сек
     threading.Timer(1.5, lambda: webbrowser.open('http://127.0.0.1:5000')).start()
-    app.run(host='127.0.0.1', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)

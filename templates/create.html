@@ -9,8 +9,10 @@
              placeholder="Введите название или оставьте пустым">
     </div>
     <div class="mb-3">
-      <label for="archive" class="form-label">ZIP-архив с изображениями</label>
-      <input class="form-control" type="file" id="archive" name="archive" accept=".zip" required>
+      <label for="archive" class="form-label">Файлы (ZIP, PDF, JPG, PNG…)</label>
+      <input class="form-control" type="file" id="archive" name="archive"
+             accept=".zip,.pdf,.jpg,.jpeg,.png,.webp,.tiff,.tif,.bmp" multiple required>
+      <div class="form-text">Можно выбрать несколько изображений сразу.</div>
     </div>
     <button type="submit" class="btn btn-primary">Загрузить</button>
   </form>
