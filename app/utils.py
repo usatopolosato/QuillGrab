@@ -676,3 +676,215 @@ def export_all_training_data_as_zip():
                 zf.write(file_path, arcname)
 
     return zip_path
+
+
+def generate_project_pdf(project_id):
+    """
+    Генерирует PDF-документ, восстанавливая страницу по данным детекции и OCR.
+    Без использования фонового изображения.
+    - Текстовые блоки (text, title) отображаются текстом из OCR (combined_text) с подходящим размером.
+    - Блоки-изображения (image) вырезаются из оригинала и вставляются.
+    - Координаты и размеры масштабируются под формат A4.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    proj = get_project(project_id)
+    if not proj:
+        raise ValueError("Проект не найден")
+
+    # Регистрируем шрифт для кириллицы
+    try:
+        font_path = "C:/Windows/Fonts/arial.ttf"
+        if os.path.exists(font_path):
+            pdfmetrics.registerFont(TTFont('CustomFont', font_path))
+            font_name = 'CustomFont'
+        else:
+            font_name = 'Helvetica'
+    except:
+        font_name = 'Helvetica'
+
+    pdf_path = os.path.join(proj['path'], f"{proj['name']}.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=A4)
+    page_width, page_height = A4
+
+    margin = 10 * mm
+    usable_width = page_width - 2 * margin
+    usable_height = page_height - 2 * margin
+
+    for page_num in range(1, proj['pages'] + 1):
+        image_name = proj['images'][page_num - 1]
+        image_path = os.path.join(proj['path'], 'original', image_name)
+        if not os.path.exists(image_path):
+            c.showPage()
+            continue
+
+        img = Image.open(image_path)
+        img_width, img_height = img.size
+
+        scale = min(usable_width / img_width, usable_height / img_height)
+        offset_x = (page_width - img_width * scale) / 2
+        offset_y = (page_height - img_height * scale) / 2
+
+        page_dir = os.path.join(proj['path'], 'pages', str(page_num))
+
+        # Загружаем детекции
+        detections = None
+        detection_edited_path = os.path.join(page_dir, 'detection_edited.json')
+        detection_raw_path = os.path.join(page_dir, 'detection_raw.json')
+        if os.path.exists(detection_edited_path):
+            with open(detection_edited_path, 'r', encoding='utf-8') as f:
+                detections = json.load(f)
+        elif os.path.exists(detection_raw_path):
+            with open(detection_raw_path, 'r', encoding='utf-8') as f:
+                detections = json.load(f)
+
+        if not detections:
+            c.showPage()
+            continue
+
+        # Загружаем OCR
+        ocr_data = None
+        ocr_edited_path = os.path.join(page_dir, 'ocr_edited.json')
+        ocr_raw_path = os.path.join(page_dir, 'ocr_raw.json')
+        if os.path.exists(ocr_edited_path):
+            with open(ocr_edited_path, 'r', encoding='utf-8') as f:
+                ocr_data = json.load(f)
+        elif os.path.exists(ocr_raw_path):
+            with open(ocr_raw_path, 'r', encoding='utf-8') as f:
+                ocr_data = json.load(f)
+
+        ocr_dict = {}
+        if ocr_data and 'boxes' in ocr_data:
+            for box in ocr_data['boxes']:
+                ocr_dict[box['box_id']] = box
+
+        # Рисуем изображения
+        image_blocks = [d for d in detections if d.get('class') == 'image']
+        text_blocks = [d for d in detections if d.get('class') in ('text', 'title')]
+
+        for detection in image_blocks:
+            box_id = detection.get('id')
+            x = detection.get('x', 0)
+            y = detection.get('y', 0)
+            w = detection.get('width', 0)
+            h = detection.get('height', 0)
+
+            scaled_x = offset_x + x * scale
+            scaled_y = offset_y + (img_height - y - h) * scale
+            scaled_w = w * scale
+            scaled_h = h * scale
+
+            if scaled_w < 2 or scaled_h < 2:
+                continue
+
+            try:
+                crop = img.crop((x, y, x + w, y + h))
+                temp_crop_path = os.path.join(page_dir, f"_temp_crop_{box_id}.png")
+                crop.save(temp_crop_path)
+                img_reader = ImageReader(temp_crop_path)
+                c.drawImage(img_reader, scaled_x, scaled_y, scaled_w, scaled_h)
+                try:
+                    os.remove(temp_crop_path)
+                except:
+                    pass
+            except Exception as e:
+                logger.error(f"Не удалось обработать image-блок {box_id}: {e}")
+                continue
+
+        # Рисуем текстовые блоки
+        for detection in text_blocks:
+            box_id = detection.get('id')
+            x = detection.get('x', 0)
+            y = detection.get('y', 0)
+            w = detection.get('width', 0)
+            h = detection.get('height', 0)
+            box_class = detection.get('class', 'unknown')
+
+            scaled_x = offset_x + x * scale
+            scaled_y = offset_y + (img_height - y - h) * scale
+            scaled_w = w * scale
+            scaled_h = h * scale
+
+            if scaled_w < 5 or scaled_h < 5:
+                continue
+
+            # Ищем текст
+            text = None
+            if box_id in ocr_dict:
+                text = ocr_dict[box_id].get('combined_text', '')
+            else:
+                for ocr_box in ocr_data.get('boxes', []):
+                    bbox = ocr_box.get('bbox', {})
+                    if bbox:
+                        ox = bbox.get('x', 0)
+                        oy = bbox.get('y', 0)
+                        ow = bbox.get('width', 0)
+                        oh = bbox.get('height', 0)
+                        if (x < ox + ow and x + w > ox and
+                            y < oy + oh and y + h > oy):
+                            text = ocr_box.get('combined_text', '')
+                            break
+
+            if text and text != "[нет текста]":
+                # Размер шрифта как в отладочной версии
+                if box_class == 'title':
+                    font_size = 12
+                    c.setFillColorRGB(0.2, 0.2, 0.8)  # синий для заголовков
+                else:
+                    font_size = 8
+                    c.setFillColorRGB(0, 0, 0)  # чёрный для текста
+
+                c.setFont(font_name, font_size)
+
+                # Выводим весь текст без обрезания
+                text_y = scaled_y + scaled_h - 2
+                c.drawString(scaled_x + 2, text_y, text)
+
+            else:
+                # Если текста нет, рисуем пунктирную рамку
+                c.setStrokeColorRGB(0.8, 0.8, 0.8)
+                c.setDash(2, 2)
+                c.rect(scaled_x, scaled_y, scaled_w, scaled_h)
+                c.setDash()
+                c.setFont('Helvetica', 6)
+                c.setFillColorRGB(0.5, 0.5, 0.5)
+                c.drawString(scaled_x + 2, scaled_y + 2, f"[{box_class}]")
+
+        c.showPage()
+
+    c.save()
+    logger.info(f"PDF сгенерирован для проекта {project_id}: {pdf_path}")
+    return pdf_path
+
+
+def generate_project_docx(project_id):
+    """
+    Генерирует DOCX из PDF проекта с помощью pdf2docx.
+    """
+    try:
+        from pdf2docx import Converter
+    except ImportError:
+        raise ImportError("Библиотека pdf2docx не установлена. Установите: pip install pdf2docx")
+
+    proj = get_project(project_id)
+    if not proj:
+        raise ValueError("Проект не найден")
+
+    # Сначала генерируем PDF
+    pdf_path = generate_project_pdf(project_id)
+
+    # Путь для DOCX
+    docx_path = os.path.join(proj['path'], f"{proj['name']}.docx")
+
+    # Конвертируем PDF в DOCX
+    cv = Converter(pdf_path)
+    cv.convert(docx_path, start=0, end=None)
+    cv.close()
+
+    logger.info(f"DOCX generated for project {project_id}: {docx_path}")
+    return docx_path

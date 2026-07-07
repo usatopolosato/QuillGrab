@@ -27,7 +27,14 @@
 <div class="mt-4">
     <a href="{{ url_for('main.digitize_page', project_id=project_id) }}" class="btn btn-primary">Начать оцифровку</a>
     <button id="exportBtn" class="btn btn-success">Выгрузить тренировочные данные</button>
+
+    <!-- Новая кнопка для создания цифровой копии -->
+    <button id="generateDocxBtn" class="btn btn-warning">
+        Создать цифровую копию
+    </button>
+
     <div id="exportResult" class="mt-2"></div>
+    <div id="generateResult" class="mt-2"></div>
 </div>
 
 <script>
@@ -55,6 +62,44 @@ document.getElementById('exportBtn').addEventListener('click', function() {
         btn.disabled = false;
         btn.textContent = 'Выгрузить тренировочные данные';
         document.getElementById('exportResult').innerHTML = `<div class="alert alert-danger">Ошибка запроса: ${error}</div>`;
+    });
+});
+
+// Новая кнопка для создания цифровой копии
+document.getElementById('generateDocxBtn').addEventListener('click', function() {
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Генерация...';
+    document.getElementById('generateResult').innerHTML = '<div class="alert alert-info">Генерация цифровой копии...</div>';
+
+    fetch('{{ url_for('main.api_generate_docx', project_id=project_id) }}', {
+        method: 'POST'
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(data => {
+                throw new Error(data.error || 'Ошибка генерации');
+            });
+        }
+        // Если успешно, скачиваем файл
+        return response.blob().then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '{{ project.name }}.docx';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            btn.disabled = false;
+            btn.textContent = 'Создать цифровую копию';
+            document.getElementById('generateResult').innerHTML = '<div class="alert alert-success">Цифровая копия создана и скачана!</div>';
+        });
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.textContent = 'Создать цифровую копию';
+        document.getElementById('generateResult').innerHTML = `<div class="alert alert-danger">Ошибка: ${error.message}</div>`;
     });
 });
 </script>

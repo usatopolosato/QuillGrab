@@ -10,10 +10,12 @@ import copy
 from flask import (Blueprint, render_template, request, redirect,
                    url_for, current_app, send_from_directory, send_file, jsonify)
 from PIL import Image
-from app.utils import (create_project_from_zip, create_project_from_pdf,
-                       create_project_from_images, get_project, delete_project, list_projects,
-                       detect_page, get_detections, save_detections, ensure_dir,
-                       export_all_training_data_as_zip, export_training_data, digitize_project)
+from app.utils import (
+    create_project_from_zip, create_project_from_pdf,
+    create_project_from_images, get_project, delete_project, list_projects,
+    detect_page, get_detections, save_detections, ensure_dir,
+    export_all_training_data_as_zip, export_training_data, digitize_project,
+    generate_project_pdf, generate_project_docx)
 
 main = Blueprint('main', __name__)
 logger = logging.getLogger(__name__)
@@ -33,23 +35,18 @@ def index():
 @main.route('/create', methods=['GET', 'POST'])
 def create():
     if request.method == 'POST':
-        # Проверяем, что файлы вообще отправлены
         if 'archive' not in request.files:
             return "Нет файлов", 400
         files = request.files.getlist('archive')
-
-        # Отфильтруем пустые
         files = [f for f in files if f.filename != '']
         if not files:
             return "Файлы не выбраны", 400
 
-        # Если один файл – определяем тип по расширению
         project_name = request.form.get('name', '').strip()
         if not project_name and files:
             project_name = os.path.splitext(files[0].filename)[0]
 
         try:
-            # Смотрим расширение первого файла (если несколько – считаем изображениями)
             first_ext = os.path.splitext(files[0].filename)[1].lower()
             if first_ext == '.zip':
                 if len(files) != 1:
@@ -68,7 +65,6 @@ def create():
                 project_id, pages = create_project_from_pdf(project_name, pdf_bytes)
 
             else:
-                # Считаем, что это изображения (можно несколько)
                 for f in files:
                     ext = os.path.splitext(f.filename)[1].lower()
                     if ext not in {'.jpg', '.jpeg', '.png', '.webp', '.tiff', '.tif', '.bmp'}:
@@ -183,7 +179,6 @@ def serve_page_image(project_id, page):
 
 @main.route('/api/projects/<project_id>/pages/<int:page>/image_preview')
 def serve_page_image_preview(project_id, page):
-    """Отдаёт сжатое изображение (ширина по умолчанию 1200px)."""
     proj = get_project(project_id)
     if not proj or page < 1 or page > proj['pages']:
         return "Not found", 404
@@ -267,7 +262,6 @@ def api_save_detections(project_id, page):
 # --------------------------------------------------------------
 @main.route('/api/projects/<project_id>/pages/<int:page>/ocr', methods=['POST'])
 def api_run_ocr(project_id, page):
-    """Запускает OCR для страницы с помощью PaddleOCR (встроенная детекция строк)."""
     force = request.args.get('force', 'false').lower() == 'true'
     edited = request.args.get('edited', 'false').lower() == 'true'
 
@@ -285,19 +279,16 @@ def api_run_ocr(project_id, page):
     ocr_raw_path = os.path.join(page_dir, 'ocr_raw.json')
     ocr_edited_path = os.path.join(page_dir, 'ocr_edited.json')
 
-    # Если уже есть результат и не force – вернуть готовый
     if not force and os.path.exists(ocr_raw_path):
-        with open(ocr_raw_path, 'r') as f:
+        with open(ocr_raw_path, 'r', encoding='utf-8') as f:
             return jsonify(json.load(f))
 
-    # Если уже обрабатывается – вернуть статус
     if os.path.exists(ocr_status_path):
-        with open(ocr_status_path, 'r') as f:
+        with open(ocr_status_path, 'r', encoding='utf-8') as f:
             status = json.load(f)
         if status.get('status') == 'processing':
             return jsonify({'status': 'processing'}), 202
 
-    # Загружаем (или создаём) разметку блоков
     detections = get_detections(project_id, page, edited=edited)
     if detections is None:
         logger.info("No detections found, running auto-detection...")
@@ -306,7 +297,6 @@ def api_run_ocr(project_id, page):
         except Exception as e:
             return jsonify({'error': 'Auto-detection failed: ' + str(e)}), 500
 
-    # Проверяем, есть ли текст или заголовки
     text_boxes = [box for box in detections if box['class'] in ('text', 'title')]
     if not text_boxes:
         return jsonify({'error': 'На странице не найдено текстовых или заголовочных блоков. Распознавание невозможно.'}), 400
@@ -315,7 +305,7 @@ def api_run_ocr(project_id, page):
     original_image_path = os.path.join(proj['path'], 'original', original_image_name)
 
     status = {'status': 'processing', 'boxes_done': 0, 'total_boxes': len(text_boxes)}
-    with open(ocr_status_path, 'w') as f:
+    with open(ocr_status_path, 'w', encoding='utf-8') as f:
         json.dump(status, f)
 
     def process():
@@ -332,7 +322,6 @@ def api_run_ocr(project_id, page):
                     'height': box['height']
                 }
 
-                # Вырезаем область блока
                 try:
                     box_crop = full_img.crop((box['x'], box['y'],
                                               box['x'] + box['width'],
@@ -341,7 +330,6 @@ def api_run_ocr(project_id, page):
                     logger.error(f"Failed to crop box {box['id']}: {e}")
                     continue
 
-                # Временный файл для PaddleOCR
                 tmp_crop_path = os.path.join(page_dir, f"_tmp_{box['id']}.png")
                 box_crop.save(tmp_crop_path)
 
@@ -358,7 +346,6 @@ def api_run_ocr(project_id, page):
                     line_id = str(uuid.uuid4())[:8]
                     lb = line['bbox']
 
-                    # Вырезаем изображение строки
                     try:
                         line_img = box_crop.crop((lb['x'], lb['y'],
                                                   lb['x'] + lb['width'],
@@ -395,27 +382,21 @@ def api_run_ocr(project_id, page):
                     'combined_text': ' '.join(combined_parts) if combined_parts else "[нет текста]"
                 })
 
-                # Обновляем статус
                 status['boxes_done'] = i + 1
-                with open(ocr_status_path, 'w') as f:
+                with open(ocr_status_path, 'w', encoding='utf-8') as f:
                     json.dump(status, f)
 
-            # ---------- ПОСТОБРАБОТКА ----------
             if not ocr_results['boxes']:
                 status['status'] = 'error'
                 status['message'] = 'После обработки не получено ни одной строки.'
             else:
-                # Сохраняем raw
-                with open(ocr_raw_path, 'w') as f:
+                with open(ocr_raw_path, 'w', encoding='utf-8') as f:
                     json.dump(ocr_results, f, ensure_ascii=False, indent=2)
 
-                # Создаём edited-версию
                 edited_data = copy.deepcopy(ocr_results)
 
                 for box in edited_data['boxes']:
                     lines = box['lines']
-
-                    # 1. SymSpell для каждой строки
                     symspell_texts = []
                     for line in lines:
                         raw = line['text']
@@ -424,32 +405,25 @@ def api_run_ocr(project_id, page):
                             symspell_texts.append(corrected)
                         else:
                             symspell_texts.append(raw if raw else '')
-
-                    # 2. LLM корректирует целый блок с нумерацией
                     final_texts = manager.llm.correct_block_lines(symspell_texts)
-
-                    # 3. Записываем edited_text в строки
                     for line, final_text in zip(lines, final_texts):
                         line['edited_text'] = final_text
-
-                    # 4. Обновляем combined_text на основе edited_text
                     all_edited = [line.get('edited_text') or line.get('text') or '' for line in lines]
                     box['combined_text'] = ' '.join(all_edited) if all_edited else '[нет текста]'
 
-                # Сохраняем edited
-                with open(ocr_edited_path, 'w') as f:
+                with open(ocr_edited_path, 'w', encoding='utf-8') as f:
                     json.dump(edited_data, f, ensure_ascii=False, indent=2)
 
                 status['status'] = 'done'
 
-            with open(ocr_status_path, 'w') as f:
+            with open(ocr_status_path, 'w', encoding='utf-8') as f:
                 json.dump(status, f)
 
         except Exception as e:
             logger.exception("OCR process fatal")
             status['status'] = 'error'
             status['message'] = str(e)
-            with open(ocr_status_path, 'w') as f:
+            with open(ocr_status_path, 'w', encoding='utf-8') as f:
                 json.dump(status, f)
 
     threading.Thread(target=process).start()
@@ -464,7 +438,7 @@ def api_ocr_status(project_id, page):
     status_path = os.path.join(proj['path'], 'pages', str(page), 'ocr_status.json')
     if not os.path.exists(status_path):
         return jsonify({'status': 'not_started'})
-    with open(status_path) as f:
+    with open(status_path, 'r', encoding='utf-8') as f:
         return jsonify(json.load(f))
 
 
@@ -482,9 +456,9 @@ def api_get_ocr(project_id, page):
     with open(filepath, 'r', encoding='utf-8') as f:
         return jsonify(json.load(f))
 
+
 @main.route('/api/projects/<project_id>/pages/<int:page>/ocr', methods=['PUT'])
 def api_save_ocr(project_id, page):
-    """Сохраняет исправленные тексты и добавляет ручные строки."""
     data = request.get_json()
     if not data:
         return jsonify({'error': 'Invalid data'}), 400
@@ -496,27 +470,23 @@ def api_save_ocr(project_id, page):
     raw_path = os.path.join(page_dir, 'ocr_raw.json')
     edited_path = os.path.join(page_dir, 'ocr_edited.json')
 
-    # Загружаем существующие данные (если есть)
     ocr_data = {'boxes': []}
     if os.path.exists(edited_path):
-        with open(edited_path) as f:
+        with open(edited_path, 'r', encoding='utf-8') as f:
             ocr_data = json.load(f)
     elif os.path.exists(raw_path):
-        with open(raw_path) as f:
+        with open(raw_path, 'r', encoding='utf-8') as f:
             ocr_data = json.load(f)
 
-    # Обновляем строки из поля lines
     if 'lines' in data:
         edits_dict = {item['line_id']: item['edited_text'] for item in data['lines']}
         for box in ocr_data['boxes']:
             for line in box.get('lines', []):
                 if line['line_id'] in edits_dict:
                     line['edited_text'] = edits_dict[line['line_id']]
-            # Пересчитываем combined_text
             all_texts = [line.get('edited_text') or line.get('text') or '' for line in box.get('lines', [])]
             box['combined_text'] = ' '.join(all_texts) if all_texts else '[нет текста]'
 
-    # Добавляем ручные строки в существующие блоки
     if 'manual_lines' in data:
         for ml in data['manual_lines']:
             box_id = ml.get('box_id')
@@ -536,10 +506,9 @@ def api_save_ocr(project_id, page):
                     box['combined_text'] = ' '.join(all_texts)
                     break
 
-    with open(edited_path, 'w') as f:
+    with open(edited_path, 'w', encoding='utf-8') as f:
         json.dump(ocr_data, f, ensure_ascii=False, indent=2)
 
-    # Сохраняем в training_data для строк, где текст изменился
     train_dir = os.path.join(current_app.config.get('TRAINING_DATA_PATH', 'training_data'), 'ocr')
     for box in ocr_data['boxes']:
         for line in box.get('lines', []):
@@ -573,7 +542,6 @@ def api_export_training_data(project_id):
 
 @main.route('/api/projects/<project_id>/pages/<int:page>/lines/<path:filename>')
 def serve_line_image(project_id, page, filename):
-    """Отдаёт изображение строки."""
     proj = get_project(project_id)
     if not proj:
         return "Not found", 404
@@ -599,7 +567,7 @@ def api_start_digitize(project_id):
 
     status_path = os.path.join(proj['path'], 'digitize_status.json')
     if os.path.exists(status_path):
-        with open(status_path, 'r', encoding='utf-8') as f:  # явно utf-8
+        with open(status_path, 'r', encoding='utf-8') as f:
             status = json.load(f)
         if status.get('status') == 'processing':
             return jsonify({'error': 'Digitization already running'}), 409
@@ -608,11 +576,10 @@ def api_start_digitize(project_id):
     if not manager:
         return jsonify({'error': 'Model manager not available'}), 500
 
-    # Получаем объект приложения
     app = current_app._get_current_object()
 
     try:
-        digitize_project(project_id, manager, app)   # передаём app
+        digitize_project(project_id, manager, app)
         return jsonify({'status': 'started'}), 202
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -632,7 +599,6 @@ def api_digitize_status(project_id):
 
 @main.route('/api/export_all_training_data')
 def api_export_all_training_data():
-    """Выгружает все тренировочные данные в виде ZIP-архива."""
     try:
         zip_path = export_all_training_data_as_zip()
         return send_file(
@@ -645,4 +611,40 @@ def api_export_all_training_data():
         return jsonify({'error': str(e)}), 404
     except Exception as e:
         logger.exception("Export all training data failed")
+        return jsonify({'error': str(e)}), 500
+
+
+@main.route('/api/projects/<project_id>/generate_docx', methods=['POST'])
+def api_generate_docx(project_id):
+    try:
+        docx_path = generate_project_docx(project_id)
+        return send_file(
+            docx_path,
+            as_attachment=True,
+            download_name=f"{get_project(project_id)['name']}.docx",
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+    except ImportError as e:
+        return jsonify({'error': str(e)}), 500
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.exception("Generate DOCX failed")
+        return jsonify({'error': str(e)}), 500
+
+
+@main.route('/api/projects/<project_id>/generate_pdf', methods=['POST'])
+def api_generate_pdf(project_id):
+    try:
+        pdf_path = generate_project_pdf(project_id)
+        return send_file(
+            pdf_path,
+            as_attachment=True,
+            download_name=f"{get_project(project_id)['name']}.pdf",
+            mimetype='application/pdf'
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.exception("Generate PDF failed")
         return jsonify({'error': str(e)}), 500
