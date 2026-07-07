@@ -26,81 +26,97 @@
 <!-- Кнопки -->
 <div class="mt-4">
     <a href="{{ url_for('main.digitize_page', project_id=project_id) }}" class="btn btn-primary">Начать оцифровку</a>
-    <button id="exportBtn" class="btn btn-success">Выгрузить тренировочные данные</button>
-
-    <!-- Новая кнопка для создания цифровой копии -->
-    <button id="generateDocxBtn" class="btn btn-warning">
+    <button id="generateDocxBtn" class="btn btn-warning" disabled>
         Создать цифровую копию
     </button>
-
-    <div id="exportResult" class="mt-2"></div>
     <div id="generateResult" class="mt-2"></div>
+    <div id="statusInfo" class="mt-2"></div>
 </div>
 
 <script>
-document.getElementById('exportBtn').addEventListener('click', function() {
-    const btn = this;
-    btn.disabled = true;
-    btn.textContent = 'Экспорт...';
-    fetch('{{ url_for('main.api_export_training_data', project_id=project_id) }}', {
-        method: 'POST'
-    })
-    .then(response => response.json())
-    .then(data => {
-        btn.disabled = false;
-        btn.textContent = 'Выгрузить тренировочные данные';
-        const resultDiv = document.getElementById('exportResult');
-        if (data.status === 'success') {
-            resultDiv.innerHTML = `<div class="alert alert-success">
-                Экспорт завершён: детекция — ${data.stats.detection_pages} страниц, OCR — ${data.stats.ocr_lines} строк.
-            </div>`;
-        } else {
-            resultDiv.innerHTML = `<div class="alert alert-danger">Ошибка: ${data.error}</div>`;
-        }
-    })
-    .catch(error => {
-        btn.disabled = false;
-        btn.textContent = 'Выгрузить тренировочные данные';
-        document.getElementById('exportResult').innerHTML = `<div class="alert alert-danger">Ошибка запроса: ${error}</div>`;
-    });
-});
+// Проверяем статус оцифровки при загрузке страницы
+function checkDigitizationStatus() {
+    fetch('{{ url_for('main.api_digitize_status', project_id=project_id) }}')
+        .then(response => response.json())
+        .then(status => {
+            const btn = document.getElementById('generateDocxBtn');
+            const statusInfo = document.getElementById('statusInfo');
 
-// Новая кнопка для создания цифровой копии
+            if (status.status === 'done') {
+                btn.disabled = false;
+                statusInfo.innerHTML = '<div class="alert alert-success">Оцифровка завершена! Можно создать цифровую копию.</div>';
+            } else if (status.status === 'processing') {
+                btn.disabled = true;
+                statusInfo.innerHTML = '<div class="alert alert-info">Идёт оцифровка... Подождите завершения.</div>';
+                // Периодически проверяем статус
+                setTimeout(checkDigitizationStatus, 3000);
+            } else if (status.status === 'not_started') {
+                btn.disabled = true;
+                statusInfo.innerHTML = '<div class="alert alert-warning">Оцифровка не начата. Сначала запустите оцифровку.</div>';
+            } else if (status.status === 'error') {
+                btn.disabled = true;
+                statusInfo.innerHTML = `<div class="alert alert-danger">Ошибка оцифровки: ${status.message || 'неизвестная ошибка'}</div>`;
+            } else {
+                btn.disabled = true;
+                statusInfo.innerHTML = '<div class="alert alert-secondary">Статус оцифровки неизвестен.</div>';
+            }
+        })
+        .catch(error => {
+            console.error('Ошибка проверки статуса:', error);
+            document.getElementById('statusInfo').innerHTML = '<div class="alert alert-danger">Ошибка проверки статуса оцифровки</div>';
+        });
+}
+
 document.getElementById('generateDocxBtn').addEventListener('click', function() {
     const btn = this;
     btn.disabled = true;
     btn.textContent = 'Генерация...';
-    document.getElementById('generateResult').innerHTML = '<div class="alert alert-info">Генерация цифровой копии...</div>';
+    const resultDiv = document.getElementById('generateResult');
+    resultDiv.innerHTML = '<div class="alert alert-info">Экспорт тренировочных данных и создание цифровой копии...</div>';
 
-    fetch('{{ url_for('main.api_generate_docx', project_id=project_id) }}', {
+    // Сначала экспортируем тренировочные данные
+    fetch('{{ url_for('main.api_export_training_data', project_id=project_id) }}', {
         method: 'POST'
+    })
+    .then(response => response.json())
+    .then(exportData => {
+        if (exportData.status !== 'success') {
+            throw new Error(exportData.error || 'Ошибка экспорта данных');
+        }
+        resultDiv.innerHTML = `<div class="alert alert-info">Экспортировано: детекция — ${exportData.stats.detection_pages} страниц, OCR — ${exportData.stats.ocr_lines} строк. Генерация DOCX...</div>`;
+        return fetch('{{ url_for('main.api_generate_docx', project_id=project_id) }}', {
+            method: 'POST'
+        });
     })
     .then(response => {
         if (!response.ok) {
             return response.json().then(data => {
-                throw new Error(data.error || 'Ошибка генерации');
+                throw new Error(data.error || 'Ошибка генерации DOCX');
             });
         }
-        // Если успешно, скачиваем файл
-        return response.blob().then(blob => {
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = '{{ project.name }}.docx';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url);
-            btn.disabled = false;
-            btn.textContent = 'Создать цифровую копию';
-            document.getElementById('generateResult').innerHTML = '<div class="alert alert-success">Цифровая копия создана и скачана!</div>';
-        });
+        return response.blob();
+    })
+    .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '{{ project.name }}.docx';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        btn.disabled = false;
+        btn.textContent = 'Создать цифровую копию';
+        resultDiv.innerHTML = '<div class="alert alert-success">Цифровая копия создана и скачана! Тренировочные данные сохранены.</div>';
     })
     .catch(error => {
         btn.disabled = false;
         btn.textContent = 'Создать цифровую копию';
-        document.getElementById('generateResult').innerHTML = `<div class="alert alert-danger">Ошибка: ${error.message}</div>`;
+        resultDiv.innerHTML = `<div class="alert alert-danger">Ошибка: ${error.message}</div>`;
     });
 });
+
+// Запускаем проверку статуса при загрузке страницы
+document.addEventListener('DOMContentLoaded', checkDigitizationStatus);
 </script>
 {% endblock %}
