@@ -13,7 +13,7 @@ from PIL import Image
 from app.utils import (create_project_from_zip, create_project_from_pdf,
                        create_project_from_images, get_project, delete_project, list_projects,
                        detect_page, get_detections, save_detections, ensure_dir,
-                       export_training_data, export_training_data, digitize_project)
+                       export_all_training_data_as_zip, export_training_data, digitize_project)
 
 main = Blueprint('main', __name__)
 logger = logging.getLogger(__name__)
@@ -628,3 +628,21 @@ def api_digitize_status(project_id):
         return jsonify({'status': 'not_started'})
     with open(status_path, 'r', encoding='utf-8') as f:
         return jsonify(json.load(f))
+
+
+@main.route('/api/export_all_training_data')
+def api_export_all_training_data():
+    """Выгружает все тренировочные данные в виде ZIP-архива."""
+    try:
+        zip_path = export_all_training_data_as_zip()
+        return send_file(
+            zip_path,
+            as_attachment=True,
+            download_name='training_data.zip',
+            mimetype='application/zip'
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.exception("Export all training data failed")
+        return jsonify({'error': str(e)}), 500

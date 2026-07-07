@@ -648,3 +648,31 @@ def digitize_project(project_id, manager, app):
 
     threading.Thread(target=process, name=f"Digitize-{project_id}").start()
     return status_path
+
+
+def export_all_training_data_as_zip():
+    """
+    Собирает все тренировочные данные из папки training_data в ZIP-архив.
+    Возвращает путь к созданному ZIP-файлу.
+    """
+    storage = current_app.config['STORAGE_PATH']
+    train_path = current_app.config.get('TRAINING_DATA_PATH',
+                                        os.path.join(storage, 'training_data'))
+
+    if not os.path.exists(train_path):
+        raise ValueError("Нет тренировочных данных")
+
+    # Создаём временный ZIP-файл
+    import tempfile
+    zip_path = os.path.join(tempfile.gettempdir(),
+                            f"training_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(train_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                # Сохраняем относительный путь внутри архива
+                arcname = os.path.relpath(file_path, os.path.dirname(train_path))
+                zf.write(file_path, arcname)
+
+    return zip_path

@@ -3,7 +3,12 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h1>Мои проекты</h1>
-    <a href="{{ url_for('main.create') }}" class="btn btn-primary">Создать новый проект</a>
+    <div>
+        <a href="{{ url_for('main.api_export_all_training_data') }}" class="btn btn-success me-2">
+            Выгрузить тренировочные данные
+        </a>
+        <a href="{{ url_for('main.create') }}" class="btn btn-primary">Создать новый проект</a>
+    </div>
 </div>
 <p>Статус моделей: <strong>{{ models_status }}</strong></p>
 
